@@ -27,3 +27,4 @@ tensorboard --logdir ./logs/
 * Vector Quantized Autoencoder (VQ-VAE)
 * PixelCNN
 * Gated PixelCNN
+* PixelCNN++ (incoming)
