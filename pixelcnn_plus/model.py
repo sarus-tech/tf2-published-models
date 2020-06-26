@@ -7,22 +7,51 @@ tfkl = tf.keras.layers
 tfd = tfp.distributions
 
 class MaskedConv2D(tfkl.Layer):
-    def __init__(self, stack, transpose=False, name='masked_conv', **kwargs):
+    def __init__(self, stack, filters, kernel_size, strides=1, padding='SAME',
+                 transpose=False, name='masked_conv'):
         super(MaskedConv2D, self).__init__(name=name)
 
         if stack not in {'H', 'V'}:
             raise ValueError("MaskedConv2D stack should be in (V, H), "
                             f"got {stack}")
 
-        conv_class = tfkl.Conv2DTranspose if transpose else tfkl.Conv2D
-        self.conv = conv_class(**kwargs)
         self.stack = stack
+        self.filters = filters
+        self.kernel_size = kernel_size
+        self.strides = strides
+        self.padding = padding
+        self.transpose = transpose
 
     def build(self, input_shape):
-        self.conv.build(input_shape)
+        _, H, W, in_ch = input_shape
+        out_ch = self.filters
+
+        if isinstance(self.kernel_size, tuple):
+            k_y, k_x = self.kernel_size
+        else:
+            k_y = self.kernel_size
+            k_x = self.kernel_size
+
+        # Instantiate variables
+        initializer = tfk.initializers.GlorotUniform()
+        self.kernel = tf.Variable(
+            initializer((k_y, k_x, in_ch, out_ch), dtype=tf.float32),
+            trainable=True,
+            aggregation=tf.VariableAggregation.MEAN,
+            name='kernel'
+        )
+
+        self.bias = tf.Variable(
+            initializer((1, 1, 1, out_ch), dtype=tf.float32),
+            trainable=True,
+            aggregation=tf.VariableAggregation.MEAN,
+            name='bias'
+        )
+
+        if self.transpose:
+            self.out_shape = [H * self.strides, W * self.strides, out_ch]
 
         # Create the mask
-        k_y, k_x, in_ch, out_ch = self.conv.kernel.shape
         mid_x, mid_y = k_x // 2, k_y // 2
 
         # Number of pixels to keep per row depending on stack
@@ -42,8 +71,25 @@ class MaskedConv2D(tfkl.Layer):
         self.mask = tf.cast(self.mask, tf.float32)
 
     def call(self, x):
-        self.conv.kernel.assign(self.conv.kernel * self.mask)
-        return self.conv(x)
+        if self.transpose:
+            batch_dim = tf.shape(x)[0]
+            output_shape = [batch_dim] + self.out_shape
+            h = tf.nn.conv2d_transpose(
+                input=x,
+                filters=self.kernel * self.mask,
+                strides=self.strides,
+                padding=self.padding,
+                output_shape=output_shape
+            )
+        else:
+            h = tf.nn.conv2d(
+                input=x,
+                filters=self.kernel * self.mask,
+                strides=self.strides,
+                padding=self.padding,
+            )
+        return h + self.bias
+
 
 class DownRightConv(tfkl.Layer):
     """Helper class. Sum of a vertical and a horizontal masked conv."""
@@ -73,7 +119,7 @@ class ResidualBlock(tfkl.Layer):
             stack='V',
             filters=2 * hidden_dim,
             kernel_size=(3, 3),
-            padding='same',
+            padding='SAME',
             name='v_conv'
         )
 
@@ -81,7 +127,7 @@ class ResidualBlock(tfkl.Layer):
             stack='H',
             filters=2 * hidden_dim,
             kernel_size=(1, 3),
-            padding='same',
+            padding='SAME',
             name='h_conv'
         )
 
@@ -160,14 +206,14 @@ class PixelCNNplus(tfk.Model):
         self.first_conv_v = MaskedConv2D(
             stack='V',
             kernel_size=7,
-            padding='same',
+            padding='SAME',
             filters=self.hidden_dim,
             name='first_conv_v'
         )
 
         self.first_conv_h = DownRightConv(
             kernel_size=7,
-            padding='same',
+            padding='SAME',
             filters=self.hidden_dim,
             name='first_conv_h'
         )
@@ -186,7 +232,7 @@ class PixelCNNplus(tfk.Model):
             MaskedConv2D(
                 stack='V',
                 kernel_size=3,
-                padding='same',
+                padding='SAME',
                 filters=self.hidden_dim,
                 strides=2,
                 name=f'downsampling_conv_v_{i}'
@@ -197,7 +243,7 @@ class PixelCNNplus(tfk.Model):
         self.downsampling_convs_h = [
             DownRightConv(
                 kernel_size=3,
-                padding='same',
+                padding='SAME',
                 filters=self.hidden_dim,
                 strides=2,
                 name=f'downsampling_conv_h_{i}'
@@ -220,7 +266,7 @@ class PixelCNNplus(tfk.Model):
                 stack='V',
                 transpose=True,
                 kernel_size=3,
-                padding='same',
+                padding='SAME',
                 filters=self.hidden_dim,
                 strides=2,
                 name=f'upsampling_conv_v_{i}'
@@ -232,7 +278,7 @@ class PixelCNNplus(tfk.Model):
             DownRightConv(
                 transpose=True,
                 kernel_size=3,
-                padding='same',
+                padding='SAME',
                 filters=self.hidden_dim,
                 strides=2,
                 name=f'upsampling_conv_h_{i}'
