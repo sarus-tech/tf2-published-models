@@ -109,8 +109,8 @@ class ResidualBlock(tfkl.Layer):
         # Gated operations
         h, sigmoid_h = tf.split(hidden_h, num_or_size_splits=2, axis=-1)
         v, sigmoid_v = tf.split(hidden_v, num_or_size_splits=2, axis=-1)
-        hidden_h = h * sigmoid_h
-        hidden_v = v * sigmoid_v
+        hidden_h = h * tf.math.sigmoid(sigmoid_h)
+        hidden_v = v * tf.math.sigmoid(sigmoid_v)
         # Residual connection
         hidden_h = self.res_conv(hidden_h) + h_stack
 
