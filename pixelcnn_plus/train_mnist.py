@@ -3,7 +3,7 @@ from datetime import datetime
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from model import PixelCNNplus, logistic_mix_loss
+from model import PixelCNNplus, discretized_logistic_mix_loss
 from utils import PlotSamplesCallback
 
 tfk = tf.keras
@@ -42,7 +42,7 @@ test_ds = (test_ds.batch(BATCH_SIZE)
 
 # Define model
 model = PixelCNNplus(hidden_dim=10, n_res=3, n_downsampling=1, dropout_rate=.2)
-model.compile(optimizer='adam', loss=logistic_mix_loss)
+model.compile(optimizer='adam', loss=discretized_logistic_mix_loss)
 
 # Callbacks
 time = datetime.now().strftime('%Y%m%d-%H%M%S')

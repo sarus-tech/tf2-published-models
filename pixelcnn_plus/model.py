@@ -329,13 +329,15 @@ class PixelCNNplus(tfk.Model):
 
         return samples
 
-def logistic_mix_loss(y_true, y_pred):
+def discretized_logistic_mix_loss(y_true, y_pred):
     # y_true shape (batch_size, H, W, channels)
     n_channels = y_true.shape[-1]
 
     if n_channels == 1:
         pi, mu, logvar = tf.split(y_pred, num_or_size_splits=3, axis=-1)
-        y_true = tf.squeeze(y_true, axis=3)
+        pi = tf.expand_dims(pi, axis=3)
+        mu = tf.expand_dims(mu, axis=3)
+        logvar = tf.expand_dims(logvar, axis=3)
     else:  # n_channels == 3
         (pi, mu_r, mu_g, mu_b, logvar_r, logvar_g, logvar_b, alpha,
          beta, gamma) = tf.split(y_pred, num_or_size_splits=10, axis=-1)
@@ -354,9 +356,54 @@ def logistic_mix_loss(y_true, y_pred):
     logvar = tf.maximum(logvar, -7.)
     var = tf.exp(logvar)
 
-    # Get log probs
+    # Get distribution
     mixture_distribution = tfd.Categorical(logits=pi)
     components_distribution = tfd.Logistic(loc=mu, scale=var)
     dist = tfd.MixtureSameFamily(mixture_distribution, components_distribution)
 
-    return -dist.log_prob(y_true)
+    # Discretize probabilities by pixel
+    half_pixel = 0.5 / 255.
+    log_cdf_plus = dist.log_cdf(y_true + half_pixel)
+    log_cdf_minus = dist.log_cdf(y_true - half_pixel)
+
+    log_cdf_delta = tf.stack([log_cdf_plus, -log_cdf_minus], axis=0)
+    log_probs = tf.math.reduce_logsumexp(log_cdf_delta, axis=0)
+
+    # Deal with edge cases
+    log_probs = tf.where(y_true > 0.999, 1. - log_cdf_minus, log_probs)
+    log_probs = tf.where(y_true < 0.001, log_cdf_plus, log_probs)
+
+    # Reduce all pixels
+    log_probs = tf.reduce_logsumexp(log_probs, axis=[1, 2, 3])
+
+    return log_probs
+
+    # # OpenAI version
+    # centered_x = y_true - mu
+    # inv_stdv = tf.exp(-logvar)
+
+    # plus_in = inv_stdv * (centered_x + .5/255.)
+    # cdf_plus = tf.nn.sigmoid(plus_in)
+
+    # min_in = inv_stdv * (centered_x - .5/255.)
+    # cdf_min = tf.nn.sigmoid(min_in)
+
+    # # cdf(x + 0.5)
+    # log_cdf_plus = plus_in - tf.nn.softplus(plus_in) # log probability for edge case of 0
+    # # 1 - cdf(x - 0.5)
+    # log_one_minus_cdf_min = -tf.nn.softplus(min_in) # log probability for edge case of 255
+    # cdf_delta = cdf_plus - cdf_min # probability for all other cases
+    # cdf_delta = tf.maximum(cdf_delta, 1e-12)  # used to go around gradient issue in tf.select
+
+    # # Approximation for very small probabilities
+    # mid_in = inv_stdv * centered_x
+    # log_pdf_mid = mid_in - logvar - 2.*tf.nn.softplus(mid_in) - tf.math.log(127.5)
+
+    # # Deal with very small probabilities
+    # log_probs = tf.where(cdf_delta > 1e-5, tf.log(cdf_delta), log_pdf_mid)
+    # # Deal with edge cases
+    # log_probs = tf.where(y_true > 0.999, log_one_minus_cdf_min, log_probs)
+    # log_probs = tf.where(y_true < 0.001, log_cdf_plus, log_probs)
+
+    # log_probs = tf.reduce_sum(log_probs,3) + tf.nn.log_softmax(pi)
+    # return -log_probs
