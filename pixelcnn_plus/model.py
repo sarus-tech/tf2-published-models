@@ -7,9 +7,8 @@ tfkl = tf.keras.layers
 tfd = tfp.distributions
 
 class MaskedConv2D(tfkl.Layer):
-    """For downsampling use strides > 1, for upsampling use dilation_rate > 1."""
-    def __init__(self, stack, transpose=False, **kwargs):
-        super(MaskedConv2D, self).__init__()
+    def __init__(self, stack, transpose=False, name='masked_conv', **kwargs):
+        super(MaskedConv2D, self).__init__(name=name)
 
         if stack not in {'H', 'V'}:
             raise ValueError("MaskedConv2D stack should be in (V, H), "
@@ -26,10 +25,10 @@ class MaskedConv2D(tfkl.Layer):
         k_y, k_x, in_ch, out_ch = self.conv.kernel.shape
         mid_x, mid_y = k_x // 2, k_y // 2
 
-        # Number of pixels to keep per row depending on type
+        # Number of pixels to keep per row depending on stack
         if self.stack == 'V':
             pixels_per_row = [k_x] * mid_y + [0] * (k_y - mid_y)
-        else:
+        else:  # stack == 'H'
             pixels_per_row = [0] * mid_y + [mid_x] + [0] * (k_y - mid_y - 1)
 
         pixels_per_row = tf.expand_dims(pixels_per_row, axis=1)
@@ -48,8 +47,8 @@ class MaskedConv2D(tfkl.Layer):
 
 class DownRightConv(tfkl.Layer):
     """Helper class. Sum of a vertical and a horizontal masked conv."""
-    def __init__(self, **kwargs):
-        super(DownRightConv, self).__init__()
+    def __init__(self, name='down_right_conv', **kwargs):
+        super(DownRightConv, self).__init__(name=name)
         self.v_conv = MaskedConv2D(stack='V', **kwargs)
         self.h_conv = MaskedConv2D(stack='H', **kwargs)
 
@@ -108,10 +107,10 @@ class ResidualBlock(tfkl.Layer):
         hidden_h = self.dropout(hidden_h, training=training)
         hidden_v = self.dropout(hidden_v, training=training)
         # Gated operations
-        tanh_h, sigmoid_h = tf.split(hidden_h, num_or_size_splits=2, axis=-1)
-        tanh_v, sigmoid_v = tf.split(hidden_v, num_or_size_splits=2, axis=-1)
-        hidden_h = tanh_h * sigmoid_h
-        hidden_v = tanh_v * sigmoid_v
+        h, sigmoid_h = tf.split(hidden_h, num_or_size_splits=2, axis=-1)
+        v, sigmoid_v = tf.split(hidden_v, num_or_size_splits=2, axis=-1)
+        hidden_h = h * sigmoid_h
+        hidden_v = v * sigmoid_v
         # Residual connection
         hidden_h = self.res_conv(hidden_h) + h_stack
 
@@ -149,6 +148,13 @@ class PixelCNNplus(tfk.Model):
         # Save image shape for generation
         self.image_shape = input_shape[1:]
         n_channels = input_shape[-1]
+
+        if n_channels == 1:
+            # pi, mu, sigma
+            self.n_component_per_mix = 3
+        elif n_channels == 3:
+            # pi, mu(R,G,B), sigma(R,G,B), coeffs(alpha, beta, gamma)
+            self.n_component_per_mix = 10
 
         # First convolutions
         self.first_conv_v = MaskedConv2D(
@@ -204,7 +210,7 @@ class PixelCNNplus(tfk.Model):
             MultiResidualBlock(
                 n_res=self.n_res,
                 dropout_rate=self.dropout_rate,
-                name=f'ds_res_block{i}'
+                name=f'us_res_block{i}'
             )
             for i in range(self.n_downsampling)
         ]
@@ -217,7 +223,7 @@ class PixelCNNplus(tfk.Model):
                 padding='same',
                 filters=self.hidden_dim,
                 strides=2,
-                name=f'downsampling_conv_v_{i}'
+                name=f'upsampling_conv_v_{i}'
             )
             for i in range(self.n_downsampling)
         ]
@@ -229,20 +235,20 @@ class PixelCNNplus(tfk.Model):
                 padding='same',
                 filters=self.hidden_dim,
                 strides=2,
-                name=f'downsampling_conv_h_{i}'
+                name=f'upsampling_conv_h_{i}'
             )
             for i in range(self.n_downsampling)
         ]
 
         # Final convolutions
         self.final_conv_h = tfkl.Conv2D(
-            filters = 3 * self.n_mix * n_channels,
+            filters = self.n_mix * self.n_component_per_mix,
             kernel_size = 1,
             name='final_conv'
         )
 
         self.final_conv_v = tfkl.Conv2D(
-            filters = 3 * self.n_mix * n_channels,
+            filters = self.n_mix * self.n_component_per_mix,
             kernel_size = 1,
             name='final_conv'
         )
@@ -272,42 +278,85 @@ class PixelCNNplus(tfk.Model):
             h_stack += residuals_h.pop()
 
         # Final conv
-        h = self.final_conv_h(h_stack) + self.final_conv_v(v_stack)
-
-        # Reshape output
-        height, width, n_channels = self.image_shape
-        outputs = tf.reshape(h, shape=(-1, height, width, n_channels, 3 * self.n_mix))
+        outputs = self.final_conv_h(h_stack) + self.final_conv_v(v_stack)
 
         return outputs
-
 
     def sample(self, n):
         # Start with random noise
         height, width, channels = self.image_shape
-        n_pixels = height * width * channels
-
-        logits = tf.ones((n_pixels, self.n_output))
-        flat_samples = tf.cast(tf.random.categorical(logits, n), tf.float32)
-        samples = tf.reshape(flat_samples, (n, height, width, channels))
+        n_pixels = height * width
+        samples = tf.random.uniform(
+            (n, height, width, channels), minval=1e-5, maxval=1. - 1e-5)
 
         # Sample each pixel sequentially and feed it back
         for pos in tqdm(range(n_pixels), desc="Sampling PixelCNN++"):
-            c = pos % channels
             h = (pos // channels) // height
             w = (pos // channels) % height
-            logits = self(samples)[:, h, w, c]
-            updates = tf.squeeze(tf.cast(tf.random.categorical(logits, 1), tf.float32))
-            indices = tf.constant([[i, h, w, c] for i in range(n)])
+            logits = self(samples)[:, h, w, :]  # (batch_size, 1, 1, n_components)
+
+            # Get distributions mean and variance
+            if channels == 1:
+                pi, mu, logvar = tf.split(logits, num_or_size_splits=3, axis=-1)
+            else:  # channels == 3
+                (pi, mu_r, mu_g, mu_b, logvar_r, logvar_g, logvar_b, alpha,
+                 beta, gamma) = tf.split(logits, num_or_size_splits=10, axis=-1)
+
+                alpha = tf.math.tanh(alpha)
+                beta = tf.math.tanh(beta)
+                gamma = tf.math.tanh(gamma)
+
+                mu_g = mu_g + alpha * mu_r
+                mu_b = mu_b + beta * mu_r + gamma * mu_g
+                mu = tf.stack([mu_r, mu_g, mu_b], axis=2)
+                logvar = tf.stack([logvar_r, logvar_g, logvar_b], axis=2)
+
+            logvar = tf.maximum(logvar, -7.)
+
+            # Sample mixture component
+            components = tf.random.categorical(logits=pi, num_samples=1)
+            mu = tf.gather(mu, components, axis=1, batch_dims=1)
+            logvar = tf.gather(logvar, components, axis=1, batch_dims=1)
+
+            # Sample colors
+            u = tf.random.uniform(tf.shape(mu), minval=1e-5, maxval=1. - 1e-5)
+            x = mu + tf.exp(logvar) * (tf.math.log(u) - tf.math.log(1. - u))
+            updates = tf.clip_by_value(x, 0., 1.)
+            if channels == 3:
+                updates = updates[:, 0, :]
+            indices = tf.constant([[i, h, w] for i in range(n)])
             samples = tf.tensor_scatter_nd_update(samples, indices, updates)
 
         return samples
 
 def logistic_mix_loss(y_true, y_pred):
-    pi, mu, logvar = tf.split(y_pred, num_or_size_splits=3, axis=-1)
-    var = tf.exp(logvar)  # ensure positive variance
+    # y_true shape (batch_size, H, W, channels)
+    n_channels = y_true.shape[-1]
+
+    if n_channels == 1:
+        pi, mu, logvar = tf.split(y_pred, num_or_size_splits=3, axis=-1)
+        y_true = tf.squeeze(y_true, axis=3)
+    else:  # n_channels == 3
+        (pi, mu_r, mu_g, mu_b, logvar_r, logvar_g, logvar_b, alpha,
+         beta, gamma) = tf.split(y_pred, num_or_size_splits=10, axis=-1)
+
+        alpha = tf.math.tanh(alpha)
+        beta = tf.math.tanh(beta)
+        gamma = tf.math.tanh(gamma)
+
+        mu_g = mu_g + alpha * mu_r
+        mu_b = mu_b + beta * mu_r + gamma * mu_g
+        mu = tf.stack([mu_r, mu_g, mu_b], axis=3)
+        logvar = tf.stack([logvar_r, logvar_g, logvar_b], axis=3)
+        pi = tf.tile(tf.expand_dims(pi, axis=3), [1, 1, 1, 3, 1])
+
+    # Ensure positive variance
+    logvar = tf.maximum(logvar, -7.)
+    var = tf.exp(logvar)
+
     # Get log probs
     mixture_distribution = tfd.Categorical(logits=pi)
-    components_distribution = tfd.Normal(loc=mu, scale=var)
+    components_distribution = tfd.Logistic(loc=mu, scale=var)
     dist = tfd.MixtureSameFamily(mixture_distribution, components_distribution)
-    # TODO check
-    return -dist.log_prob(tf.squeeze(y_true, axis=2))
+
+    return -dist.log_prob(y_true)

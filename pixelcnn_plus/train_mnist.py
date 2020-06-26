@@ -11,7 +11,7 @@ tfkl = tf.keras.layers
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
 # Training parameters
-EPOCHS = 1
+EPOCHS = 10
 BATCH_SIZE = 64
 BUFFER_SIZE = 1024  # for shuffling
 
@@ -22,6 +22,7 @@ train_ds, test_ds = mnist['train'], mnist['test']
 def prepare(element):
     image = element['image']
     image = tf.cast(image, tf.float32)
+    image = image / 255.
     return image
 
 # PixelCNN training requires target = input
@@ -40,12 +41,12 @@ test_ds = (test_ds.batch(BATCH_SIZE)
                    .prefetch(AUTOTUNE))
 
 # Define model
-model = PixelCNNplus(hidden_dim=10)
+model = PixelCNNplus(hidden_dim=10, n_res=3, n_downsampling=1, dropout_rate=.2)
 model.compile(optimizer='adam', loss=logistic_mix_loss)
 
 # Callbacks
 time = datetime.now().strftime('%Y%m%d-%H%M%S')
-log_dir = os.path.join('.', 'logs', 'gatedpixelcnn', time)
+log_dir = os.path.join('.', 'logs', 'pixelcnn++', time)
 tensorboard_clbk = tfk.callbacks.TensorBoard(log_dir=log_dir)
 sample_clbk = PlotSamplesCallback(logdir=log_dir)
 callbacks = [tensorboard_clbk, sample_clbk]
