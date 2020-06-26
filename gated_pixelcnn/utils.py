@@ -36,8 +36,8 @@ class PlotSamplesCallback(tfk.callbacks.Callback):
         if image.shape[-1] == 1:
             image = tf.squeeze(image, axis=-1)
 
-        ax[0].imshow(image, vmin=0., vmax=1., cmap=plt.cm.Greys)
-        ax[0].axis('off')
+        ax.imshow(image, vmin=0., vmax=1., cmap=plt.cm.Greys)
+        ax.axis('off')
 
         return fig
 

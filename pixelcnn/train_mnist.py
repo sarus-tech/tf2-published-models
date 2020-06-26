@@ -22,6 +22,7 @@ train_ds, test_ds = mnist['train'], mnist['test']
 def prepare(element):
     image = element['image']
     image = tf.cast(image, tf.float32)
+    # The image is not normalized
     return image
 
 # PixelCNN training requires target = input
