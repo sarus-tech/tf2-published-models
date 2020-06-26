@@ -163,22 +163,6 @@ class ResidualBlock(tfkl.Layer):
         return hidden_v, hidden_h
 
 
-class MultiResidualBlock(tfkl.Layer):
-    """Helper class. Stacks multiple residual blocks."""
-    def __init__(self, n_res, dropout_rate, **kwargs):
-        super(MultiResidualBlock, self).__init__(**kwargs)
-
-        self.res_blocks = [
-            ResidualBlock(dropout_rate=dropout_rate, name=f'res_block{i}')
-            for i in range(n_res)
-        ]
-
-    def call(self, v_stack, h_stack, training=False):
-        for res_block in self.res_blocks:
-            v_stack, h_stack = res_block(v_stack, h_stack, training)
-        return v_stack, h_stack
-
-
 class PixelCNNplus(tfk.Model):
     def __init__(self, hidden_dim, dropout_rate=0.2, n_res=5,
                  n_downsampling=2, n_mix=5, name='gated_pixelcnn'):
@@ -218,14 +202,14 @@ class PixelCNNplus(tfk.Model):
             name='first_conv_h'
         )
 
-        # Downsampling layers
         self.downsampling_res_blocks = [
-            MultiResidualBlock(
-                n_res=self.n_res,
-                dropout_rate=self.dropout_rate,
-                name=f'ds_res_block{i}'
-            )
-            for i in range(self.n_downsampling)
+            [
+                ResidualBlock(
+                    dropout_rate=self.dropout_rate,
+                    name=f'ds_res_block{i}_{j}'
+                ) for j in range(self.n_res)
+            ]
+            for i in range(self.n_downsampling + 1)
         ]
 
         self.downsampling_convs_v = [
@@ -251,14 +235,14 @@ class PixelCNNplus(tfk.Model):
             for i in range(self.n_downsampling)
         ]
 
-        # Upsampling layers
         self.upsampling_res_blocks = [
-            MultiResidualBlock(
-                n_res=self.n_res,
-                dropout_rate=self.dropout_rate,
-                name=f'us_res_block{i}'
-            )
-            for i in range(self.n_downsampling)
+            [
+                ResidualBlock(
+                    dropout_rate=self.dropout_rate,
+                    name=f'us_res_block{i}_{j}'
+                ) for j in range(self.n_res)
+            ]
+            for i in range(self.n_downsampling + 1)
         ]
 
         self.upsampling_convs_v = [
@@ -306,22 +290,30 @@ class PixelCNNplus(tfk.Model):
 
         # Down pass
         residuals_h, residuals_v = [h_stack], [v_stack]
-        for ds in range(self.n_downsampling):
-            v_stack, h_stack = self.downsampling_res_blocks[ds](v_stack, h_stack, training)
-            v_stack = self.downsampling_convs_v[ds](v_stack)
-            h_stack = self.downsampling_convs_h[ds](h_stack)
-            residuals_h.append(h_stack)
-            residuals_v.append(v_stack)
+        for ds in range(self.n_downsampling  + 1):
+            for res_block in self.downsampling_res_blocks[ds]:
+                v_stack, h_stack = res_block(v_stack, h_stack, training)
+                residuals_h.append(h_stack)
+                residuals_v.append(v_stack)
+            if ds < self.n_downsampling:
+                v_stack = self.downsampling_convs_v[ds](v_stack)
+                h_stack = self.downsampling_convs_h[ds](h_stack)
+                residuals_h.append(h_stack)
+                residuals_v.append(v_stack)
 
         # Up pass
         v_stack = residuals_v.pop()
         h_stack = residuals_h.pop()
-        for us in range(self.n_downsampling):
-            v_stack, h_stack = self.upsampling_res_blocks[us](v_stack, h_stack, training)
-            v_stack = self.upsampling_convs_v[us](v_stack)
-            h_stack = self.upsampling_convs_h[us](h_stack)
-            v_stack += residuals_v.pop()
-            h_stack += residuals_h.pop()
+        for us in range(self.n_downsampling + 1):
+            for res_block in self.upsampling_res_blocks[us]:
+                v_stack, h_stack = res_block(v_stack, h_stack, training)
+                v_stack += residuals_v.pop()
+                h_stack += residuals_h.pop()
+            if us < self.n_downsampling:
+                v_stack = self.upsampling_convs_v[us](v_stack)
+                h_stack = self.upsampling_convs_h[us](h_stack)
+                v_stack += residuals_v.pop()
+                h_stack += residuals_h.pop()
 
         # Final conv
         outputs = self.final_conv_h(h_stack) + self.final_conv_v(v_stack)
@@ -400,56 +392,59 @@ def discretized_logistic_mix_loss(y_true, y_pred):
 
     # Ensure positive variance
     logvar = tf.maximum(logvar, -7.)
-    var = tf.exp(logvar)
 
-    # Get distribution
-    mixture_distribution = tfd.Categorical(logits=pi)
-    components_distribution = tfd.Logistic(loc=mu, scale=var)
-    dist = tfd.MixtureSameFamily(mixture_distribution, components_distribution)
+    # var = tf.exp(logvar)
+    # # Get distribution
+    # mixture_distribution = tfd.Categorical(logits=pi)
+    # components_distribution = tfd.Logistic(loc=mu, scale=var)
+    # dist = tfd.MixtureSameFamily(mixture_distribution, components_distribution)
 
-    # Discretize probabilities by pixel
-    half_pixel = 0.5 / 255.
-    log_cdf_plus = dist.log_cdf(y_true + half_pixel)
-    log_cdf_minus = dist.log_cdf(y_true - half_pixel)
+    # # Discretize probabilities by pixel
+    # half_pixel = 0.5 / 255.
+    # up_limit = y_true + half_pixel
+    # down_limit = y_true - half_pixel
 
-    log_cdf_delta = tf.stack([log_cdf_plus, -log_cdf_minus], axis=0)
-    log_probs = tf.math.reduce_logsumexp(log_cdf_delta, axis=0)
+    # cdf_plus = dist.cdf(up_limit)
+    # cdf_minus = dist.cdf(down_limit)
+    # cdf_delta = tf.maximum(cdf_plus - cdf_minus, 1e-12)
 
-    # Deal with edge cases
-    log_probs = tf.where(y_true > 0.999, 1. - log_cdf_minus, log_probs)
-    log_probs = tf.where(y_true < 0.001, log_cdf_plus, log_probs)
+    # # For small probabilities approximate cdf_delta by the middle pdf
+    # approx_cdf_delta = dist.log_prob(y_true) - tf.math.log(255.)
+    # log_probs = tf.where(cdf_delta > 1e-5, tf.math.log(cdf_delta), approx_cdf_delta)
 
-    # Reduce all pixels
-    log_probs = tf.reduce_logsumexp(log_probs, axis=[1, 2, 3])
-
-    return log_probs
-
-    # # OpenAI version
-    # centered_x = y_true - mu
-    # inv_stdv = tf.exp(-logvar)
-
-    # plus_in = inv_stdv * (centered_x + .5/255.)
-    # cdf_plus = tf.nn.sigmoid(plus_in)
-
-    # min_in = inv_stdv * (centered_x - .5/255.)
-    # cdf_min = tf.nn.sigmoid(min_in)
-
-    # # cdf(x + 0.5)
-    # log_cdf_plus = plus_in - tf.nn.softplus(plus_in) # log probability for edge case of 0
-    # # 1 - cdf(x - 0.5)
-    # log_one_minus_cdf_min = -tf.nn.softplus(min_in) # log probability for edge case of 255
-    # cdf_delta = cdf_plus - cdf_min # probability for all other cases
-    # cdf_delta = tf.maximum(cdf_delta, 1e-12)  # used to go around gradient issue in tf.select
-
-    # # Approximation for very small probabilities
-    # mid_in = inv_stdv * centered_x
-    # log_pdf_mid = mid_in - logvar - 2.*tf.nn.softplus(mid_in) - tf.math.log(127.5)
-
-    # # Deal with very small probabilities
-    # log_probs = tf.where(cdf_delta > 1e-5, tf.log(cdf_delta), log_pdf_mid)
     # # Deal with edge cases
-    # log_probs = tf.where(y_true > 0.999, log_one_minus_cdf_min, log_probs)
+    # log_cdf_plus = dist.log_cdf(up_limit)
+    # log_cdf_minus = dist.log_cdf(down_limit)
+    # log_probs = tf.where(y_true > 0.999, 1. - log_cdf_minus, log_probs)
     # log_probs = tf.where(y_true < 0.001, log_cdf_plus, log_probs)
 
-    # log_probs = tf.reduce_sum(log_probs,3) + tf.nn.log_softmax(pi)
-    # return -log_probs
+    # OpenAI version
+    y_true = tf.expand_dims(y_true, axis=-1)
+    centered_x = y_true - mu
+    inv_stdv = tf.exp(-logvar)
+    half_pixel = 1 / 127.5
+
+    plus_in = inv_stdv * (centered_x + half_pixel)
+    cdf_plus = tf.nn.sigmoid(plus_in)
+
+    min_in = inv_stdv * (centered_x - half_pixel)
+    cdf_min = tf.nn.sigmoid(min_in)
+
+    cdf_delta = cdf_plus - cdf_min # probability for all other cases
+    cdf_delta = tf.maximum(cdf_delta, 1e-12)  # used to go around gradient issue in tf.select
+
+    # Approximation for very small probabilities
+    mid_in = inv_stdv * centered_x
+    approx_cdf_delta = mid_in - logvar - 2.*tf.nn.softplus(mid_in) - tf.math.log(127.5)
+
+    # Deal with very small probabilities
+    log_probs = tf.where(cdf_delta > 1e-5, tf.math.log(cdf_delta), approx_cdf_delta)
+
+    # Deal with edge cases
+    log_cdf_plus = plus_in - tf.nn.softplus(plus_in) # log probability for edge case of 0
+    log_one_minus_cdf_min = -tf.nn.softplus(min_in) # log probability for edge case of 255
+    log_probs = tf.where(y_true > 0.999, log_one_minus_cdf_min, log_probs)
+    log_probs = tf.where(y_true < 0.001, log_cdf_plus, log_probs)
+
+    log_probs = tf.reduce_sum(log_probs, axis=3) + tf.nn.log_softmax(pi[:,:,:,0,:])
+    return -log_probs

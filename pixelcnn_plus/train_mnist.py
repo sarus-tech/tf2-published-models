@@ -41,10 +41,10 @@ test_ds = (test_ds.batch(BATCH_SIZE)
                    .prefetch(AUTOTUNE))
 
 # Define model
-# strategy = tf.distribute.MirroredStrategy()
-# with strategy.scope():
-model = PixelCNNplus(hidden_dim=10, n_res=3, n_downsampling=1, dropout_rate=.2)
-model.compile(optimizer='adam', loss=discretized_logistic_mix_loss)
+strategy = tf.distribute.MirroredStrategy()
+with strategy.scope():
+    model = PixelCNNplus(hidden_dim=32, n_res=3, n_downsampling=1, dropout_rate=.1, n_mix=2)
+    model.compile(optimizer='adam', loss=discretized_logistic_mix_loss)
 
 # Callbacks
 time = datetime.now().strftime('%Y%m%d-%H%M%S')

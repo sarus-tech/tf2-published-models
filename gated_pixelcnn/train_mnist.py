@@ -41,9 +41,11 @@ test_ds = (test_ds.batch(BATCH_SIZE)
                    .prefetch(AUTOTUNE))
 
 # Define model
-model = GatedPixelCNN(hidden_dim=32, n_res=3)
-loss = tfk.losses.SparseCategoricalCrossentropy(from_logits=True)
-model.compile(optimizer='adam', loss=loss)
+strategy = tf.distribute.MirroredStrategy()
+with strategy.scope():
+    model = GatedPixelCNN(hidden_dim=32, n_res=3)
+    loss = tfk.losses.SparseCategoricalCrossentropy(from_logits=True)
+    model.compile(optimizer='adam', loss=loss)
 
 # Callbacks
 time = datetime.now().strftime('%Y%m%d-%H%M%S')

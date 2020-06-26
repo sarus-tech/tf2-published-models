@@ -4,9 +4,10 @@ import tensorflow as tf
 tfk = tf.keras
 tfkl = tf.keras.layers
 
-class MaskedConv2D(tfkl.Conv2D):
-    def __init__(self, type, n_colors, **kwargs):
-        super(MaskedConv2D, self).__init__(**kwargs)
+class MaskedConv2D(tfkl.Layer):
+    def __init__(self, type, n_colors, filters, kernel_size, strides=1,
+                 padding='SAME', name='masked_conv'):
+        super(MaskedConv2D, self).__init__(name=name)
 
         if type not in {'A', 'B'}:
             raise ValueError("MaskedConv2D type should be in (A, B), "
@@ -14,12 +15,38 @@ class MaskedConv2D(tfkl.Conv2D):
 
         self.type = type
         self.n_colors = n_colors
+        self.filters = filters
+        self.kernel_size = kernel_size
+        self.strides = strides
+        self.padding = padding
 
     def build(self, input_shape):
-        super(MaskedConv2D, self).build(input_shape)
+        _, H, W, in_ch = input_shape
+        out_ch = self.filters
+
+        if isinstance(self.kernel_size, tuple):
+            k_y, k_x = self.kernel_size
+        else:
+            k_y = self.kernel_size
+            k_x = self.kernel_size
+
+        # Instantiate variables
+        initializer = tfk.initializers.GlorotUniform()
+        self.kernel = tf.Variable(
+            initializer((k_y, k_x, in_ch, out_ch), dtype=tf.float32),
+            trainable=True,
+            aggregation=tf.VariableAggregation.MEAN,
+            name='kernel'
+        )
+
+        self.bias = tf.Variable(
+            initializer((1, 1, 1, out_ch), dtype=tf.float32),
+            trainable=True,
+            aggregation=tf.VariableAggregation.MEAN,
+            name='bias'
+        )
 
         # Create the mask
-        k_y, k_x, in_ch, out_ch = self.kernel.shape
         mid_x, mid_y = k_x // 2, k_y // 2
 
         # Number of pixels to keep per row depending on type
@@ -64,8 +91,13 @@ class MaskedConv2D(tfkl.Conv2D):
         self.mask = tf.cast(self.mask, tf.float32)
 
     def call(self, x):
-        self.kernel.assign(self.kernel * self.mask)
-        return super(MaskedConv2D, self).call(x)
+        h = tf.nn.conv2d(
+            input=x,
+            filters=self.kernel * self.mask,
+            strides=self.strides,
+            padding=self.padding,
+        )
+        return h + self.bias
 
 class ResidualBlock(tfkl.Layer):
     def __init__(self, n_colors, **kwargs):
@@ -89,7 +121,7 @@ class ResidualBlock(tfkl.Layer):
             n_colors=self.n_colors,
             filters=hidden_dim // 2,
             kernel_size=3,
-            padding='same',
+            padding='SAME',
             name='conv3x3'
         )
 
@@ -127,7 +159,7 @@ class PixelCNN(tfk.Model):
             n_colors=n_colors,
             kernel_size=7,
             filters=2 * n_colors * self.hidden_dim,
-            padding='same',
+            padding='SAME',
             name='conv_a'
         )
 
