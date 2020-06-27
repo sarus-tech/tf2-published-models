@@ -373,7 +373,6 @@ def discretized_logistic_mix_loss(y_true, y_pred):
 
     if n_channels == 1:
         pi, mu, logvar = tf.split(y_pred, num_or_size_splits=3, axis=-1)
-        pi = tf.expand_dims(pi, axis=3)
         mu = tf.expand_dims(mu, axis=3)
         logvar = tf.expand_dims(logvar, axis=3)
     else:  # n_channels == 3
@@ -388,63 +387,40 @@ def discretized_logistic_mix_loss(y_true, y_pred):
         mu_b = mu_b + beta * mu_r + gamma * mu_g
         mu = tf.stack([mu_r, mu_g, mu_b], axis=3)
         logvar = tf.stack([logvar_r, logvar_g, logvar_b], axis=3)
-        pi = tf.tile(tf.expand_dims(pi, axis=3), [1, 1, 1, 3, 1])
 
     # Ensure positive variance
     logvar = tf.maximum(logvar, -7.)
+    var = tf.exp(logvar)
 
-    # var = tf.exp(logvar)
-    # # Get distribution
-    # mixture_distribution = tfd.Categorical(logits=pi)
-    # components_distribution = tfd.Logistic(loc=mu, scale=var)
-    # dist = tfd.MixtureSameFamily(mixture_distribution, components_distribution)
-
-    # # Discretize probabilities by pixel
-    # half_pixel = 0.5 / 255.
-    # up_limit = y_true + half_pixel
-    # down_limit = y_true - half_pixel
-
-    # cdf_plus = dist.cdf(up_limit)
-    # cdf_minus = dist.cdf(down_limit)
-    # cdf_delta = tf.maximum(cdf_plus - cdf_minus, 1e-12)
-
-    # # For small probabilities approximate cdf_delta by the middle pdf
-    # approx_cdf_delta = dist.log_prob(y_true) - tf.math.log(255.)
-    # log_probs = tf.where(cdf_delta > 1e-5, tf.math.log(cdf_delta), approx_cdf_delta)
-
-    # # Deal with edge cases
-    # log_cdf_plus = dist.log_cdf(up_limit)
-    # log_cdf_minus = dist.log_cdf(down_limit)
-    # log_probs = tf.where(y_true > 0.999, 1. - log_cdf_minus, log_probs)
-    # log_probs = tf.where(y_true < 0.001, log_cdf_plus, log_probs)
-
-    # OpenAI version
+    # Add extra-dim for broadcasting channel-wise
     y_true = tf.expand_dims(y_true, axis=-1)
-    centered_x = y_true - mu
-    inv_stdv = tf.exp(-logvar)
+
+    def log_cdf(x):  # log logistic cdf
+        return tf.math.log_sigmoid((x - mu) / var)
+
+    def log_pdf(x):  # log logistic pdf
+        norm = (x - mu) / var
+        return -norm - logvar + 2. * tf.math.log_sigmoid(norm)
+
     half_pixel = 1 / 127.5
 
-    plus_in = inv_stdv * (centered_x + half_pixel)
-    cdf_plus = tf.nn.sigmoid(plus_in)
+    log_cdf_plus = log_cdf(y_true + half_pixel)
+    log_cdf_min = log_cdf(y_true - half_pixel)
 
-    min_in = inv_stdv * (centered_x - half_pixel)
-    cdf_min = tf.nn.sigmoid(min_in)
+    cdf_delta = tf.exp(log_cdf_plus) - tf.exp(log_cdf_min)
+    cdf_delta = tf.maximum(cdf_delta, 1e-12)
 
-    cdf_delta = cdf_plus - cdf_min # probability for all other cases
-    cdf_delta = tf.maximum(cdf_delta, 1e-12)  # used to go around gradient issue in tf.select
-
-    # Approximation for very small probabilities
-    mid_in = inv_stdv * centered_x
-    approx_cdf_delta = mid_in - logvar - 2.*tf.nn.softplus(mid_in) - tf.math.log(127.5)
-
-    # Deal with very small probabilities
-    log_probs = tf.where(cdf_delta > 1e-5, tf.math.log(cdf_delta), approx_cdf_delta)
+    # At small probabilities the interval difference is approximated
+    # as the pdf value at the center
+    approx_log_cdf_delta = log_pdf(y_true) - tf.math.log(255.)
+    log_probs = tf.where(cdf_delta > 1e-5, tf.math.log(cdf_delta), approx_log_cdf_delta)
 
     # Deal with edge cases
-    log_cdf_plus = plus_in - tf.nn.softplus(plus_in) # log probability for edge case of 0
-    log_one_minus_cdf_min = -tf.nn.softplus(min_in) # log probability for edge case of 255
-    log_probs = tf.where(y_true > 0.999, log_one_minus_cdf_min, log_probs)
+    log_probs = tf.where(y_true > 0.999, 1. - log_cdf_min, log_probs)
     log_probs = tf.where(y_true < 0.001, log_cdf_plus, log_probs)
 
-    log_probs = tf.reduce_sum(log_probs, axis=3) + tf.nn.log_softmax(pi[:,:,:,0,:])
+    log_probs = tf.reduce_sum(log_probs, axis=3)  # whole pixel prob per component
+    log_probs += tf.nn.log_softmax(pi)  #  multiply by mixture components
+    log_probs = tf.math.reduce_logsumexp(log_probs, axis=-1)  # add components probs
+
     return -log_probs
