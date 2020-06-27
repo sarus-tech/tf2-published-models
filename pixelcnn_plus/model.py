@@ -137,12 +137,6 @@ class ResidualBlock(tfkl.Layer):
             name='skip_conv'
         )
 
-        self.res_conv = tfkl.Conv2D(
-            filters=hidden_dim,
-            kernel_size=1,
-            name='res_conv'
-        )
-
     def call(self, v_stack, h_stack, training=False):
         # First convs
         hidden_v = self.v_conv(tf.nn.relu(v_stack))
@@ -158,7 +152,8 @@ class ResidualBlock(tfkl.Layer):
         hidden_h = h * tf.math.sigmoid(sigmoid_h)
         hidden_v = v * tf.math.sigmoid(sigmoid_v)
         # Residual connection
-        hidden_h = self.res_conv(hidden_h) + h_stack
+        hidden_h += h_stack
+        hidden_v += v_stack
 
         return hidden_v, hidden_h
 
@@ -270,14 +265,28 @@ class PixelCNNplus(tfk.Model):
             for i in range(self.n_downsampling)
         ]
 
-        # Final convolutions
-        self.final_conv_h = tfkl.Conv2D(
-            filters = self.n_mix * self.n_component_per_mix,
-            kernel_size = 1,
-            name='final_conv'
-        )
+        # Residuals connections convs
+        n_res_connections = (self.n_downsampling + 1) * (self.n_res + 1)
+        self.res_conv_h = [
+            tfkl.Conv2D(
+                filters=self.hidden_dim,
+                kernel_size=1,
+                name=f'res_conv_h_{i}'
+            )
+            for i in range(n_res_connections)
+        ]
 
-        self.final_conv_v = tfkl.Conv2D(
+        self.res_conv_v = [
+            tfkl.Conv2D(
+                filters=self.hidden_dim,
+                kernel_size=1,
+                name=f'res_conv_v_{i}'
+            )
+            for i in range(n_res_connections)
+        ]
+
+        # Final convolutions
+        self.final_conv = tfkl.Conv2D(
             filters = self.n_mix * self.n_component_per_mix,
             kernel_size = 1,
             name='final_conv'
@@ -301,6 +310,17 @@ class PixelCNNplus(tfk.Model):
                 residuals_h.append(h_stack)
                 residuals_v.append(v_stack)
 
+        # Residual connections convolutions
+        residuals_v = [
+            res_conv_v(tf.nn.relu(res_v))
+            for res_conv_v, res_v in zip(self.res_conv_v, residuals_v)
+        ]
+
+        residuals_h = [
+            res_conv_h(tf.nn.relu(res_h))
+            for res_conv_h, res_h in zip(self.res_conv_h, residuals_h)
+        ]
+
         # Up pass
         v_stack = residuals_v.pop()
         h_stack = residuals_h.pop()
@@ -316,7 +336,7 @@ class PixelCNNplus(tfk.Model):
                 h_stack += residuals_h.pop()
 
         # Final conv
-        outputs = self.final_conv_h(h_stack) + self.final_conv_v(v_stack)
+        outputs = self.final_conv(h_stack)
 
         return outputs
 
