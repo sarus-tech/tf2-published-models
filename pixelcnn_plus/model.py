@@ -117,7 +117,7 @@ class ResidualBlock(tfkl.Layer):
 
         self.v_conv = MaskedConv2D(
             stack='V',
-            filters=2 * hidden_dim,
+            filters=hidden_dim,
             kernel_size=(3, 3),
             padding='SAME',
             name='v_conv'
@@ -125,14 +125,30 @@ class ResidualBlock(tfkl.Layer):
 
         self.h_conv = MaskedConv2D(
             stack='H',
-            filters=2 * hidden_dim,
+            filters=hidden_dim,
             kernel_size=(1, 3),
             padding='SAME',
             name='h_conv'
         )
 
-        self.skip_conv = tfkl.Conv2D(
+        self.v_conv_2 = MaskedConv2D(
+            stack='V',
             filters=2 * hidden_dim,
+            kernel_size=(3, 3),
+            padding='SAME',
+            name='v_conv_2'
+        )
+
+        self.h_conv_2 = MaskedConv2D(
+            stack='H',
+            filters=2 * hidden_dim,
+            kernel_size=(1, 3),
+            padding='SAME',
+            name='h_conv_2'
+        )
+
+        self.skip_conv = tfkl.Conv2D(
+            filters=hidden_dim,
             kernel_size=1,
             name='skip_conv'
         )
@@ -146,6 +162,9 @@ class ResidualBlock(tfkl.Layer):
         # Dropout
         hidden_h = self.dropout(hidden_h, training=training)
         hidden_v = self.dropout(hidden_v, training=training)
+        # Second convs
+        hidden_v = self.v_conv_2(tf.nn.relu(hidden_v))
+        hidden_h = self.h_conv_2(tf.nn.relu(hidden_h))
         # Gated operations
         h, sigmoid_h = tf.split(hidden_h, num_or_size_splits=2, axis=-1)
         v, sigmoid_v = tf.split(hidden_v, num_or_size_splits=2, axis=-1)
@@ -160,7 +179,7 @@ class ResidualBlock(tfkl.Layer):
 
 class PixelCNNplus(tfk.Model):
     def __init__(self, hidden_dim, dropout_rate=0.2, n_res=5,
-                 n_downsampling=2, n_mix=5, name='gated_pixelcnn'):
+                 n_downsampling=2, n_mix=5, name='pixelcnn_pp'):
         super(PixelCNNplus, self).__init__(name=name)
 
         self.n_res = n_res
@@ -184,17 +203,26 @@ class PixelCNNplus(tfk.Model):
         # First convolutions
         self.first_conv_v = MaskedConv2D(
             stack='V',
-            kernel_size=7,
+            kernel_size=(3, 3),
             padding='SAME',
             filters=self.hidden_dim,
             name='first_conv_v'
         )
 
-        self.first_conv_h = DownRightConv(
-            kernel_size=7,
+        self.first_conv_h_v = MaskedConv2D(
+            stack='V',
+            kernel_size=(3, 3),
             padding='SAME',
             filters=self.hidden_dim,
-            name='first_conv_h'
+            name='first_conv_h_v'
+        )
+
+        self.first_conv_h_h = MaskedConv2D(
+            stack='H',
+            kernel_size=(1, 3),
+            padding='SAME',
+            filters=self.hidden_dim,
+            name='first_conv_h_h'
         )
 
         self.downsampling_res_blocks = [
@@ -286,16 +314,22 @@ class PixelCNNplus(tfk.Model):
         ]
 
         # Final convolutions
-        self.final_conv = tfkl.Conv2D(
+        self.final_conv_v = tfkl.Conv2D(
             filters = self.n_mix * self.n_component_per_mix,
             kernel_size = 1,
-            name='final_conv'
+            name='final_conv_v'
+        )
+
+        self.final_conv_h = tfkl.Conv2D(
+            filters = self.n_mix * self.n_component_per_mix,
+            kernel_size = 1,
+            name='final_conv_h'
         )
 
     def call(self, x, training=False):
         # First convs
         v_stack = self.first_conv_v(x)
-        h_stack = self.first_conv_h(x)
+        h_stack = self.first_conv_h_h(x) + self.first_conv_h_v(x)
 
         # Down pass
         residuals_h, residuals_v = [h_stack], [v_stack]
@@ -336,7 +370,7 @@ class PixelCNNplus(tfk.Model):
                 h_stack += residuals_h.pop()
 
         # Final conv
-        outputs = self.final_conv(h_stack)
+        outputs = self.final_conv_h(h_stack) + self.final_conv_v(v_stack)
 
         return outputs
 
@@ -345,12 +379,12 @@ class PixelCNNplus(tfk.Model):
         height, width, channels = self.image_shape
         n_pixels = height * width
         samples = tf.random.uniform(
-            (n, height, width, channels), minval=1e-5, maxval=1. - 1e-5)
+            (n, height, width, channels), minval=-1. + 1e-5, maxval=1. - 1e-5)
 
         # Sample each pixel sequentially and feed it back
         for pos in tqdm(range(n_pixels), desc="Sampling PixelCNN++"):
-            h = (pos // channels) // height
-            w = (pos // channels) % height
+            h = pos // height
+            w = pos % height
             logits = self(samples)[:, h, w, :]  # (batch_size, 1, 1, n_components)
 
             # Get distributions mean and variance
@@ -379,7 +413,7 @@ class PixelCNNplus(tfk.Model):
             # Sample colors
             u = tf.random.uniform(tf.shape(mu), minval=1e-5, maxval=1. - 1e-5)
             x = mu + tf.exp(logvar) * (tf.math.log(u) - tf.math.log(1. - u))
-            updates = tf.clip_by_value(x, 0., 1.)
+            updates = tf.clip_by_value(x, -1., 1.)
             if channels == 3:
                 updates = updates[:, 0, :]
             indices = tf.constant([[i, h, w] for i in range(n)])
@@ -408,39 +442,47 @@ def discretized_logistic_mix_loss(y_true, y_pred):
         mu = tf.stack([mu_r, mu_g, mu_b], axis=3)
         logvar = tf.stack([logvar_r, logvar_g, logvar_b], axis=3)
 
-    # Ensure positive variance
     logvar = tf.maximum(logvar, -7.)
-    var = tf.exp(logvar)
 
     # Add extra-dim for broadcasting channel-wise
     y_true = tf.expand_dims(y_true, axis=-1)
 
+    def cdf(x):  # logistic cdf
+        return tf.nn.sigmoid((x - mu) * tf.exp(-logvar))
+
     def log_cdf(x):  # log logistic cdf
-        return tf.math.log_sigmoid((x - mu) / var)
+        return tf.math.log_sigmoid((x - mu) * tf.exp(-logvar))
+
+    def log_one_minus_cdf(x):  # log one minus logistic cdf
+        return -tf.math.softplus((x - mu) * tf.exp(-logvar))
 
     def log_pdf(x):  # log logistic pdf
-        norm = (x - mu) / var
-        return -norm - logvar + 2. * tf.math.log_sigmoid(norm)
+        norm = (x - mu) * tf.exp(-logvar)
+        return norm - logvar - 2. * tf.math.softplus(norm)
 
-    half_pixel = 1 / 127.5
+    half_pixel = 1 / 255.
+
+    cdf_plus = cdf(y_true + half_pixel)
+    cdf_min = cdf(y_true - half_pixel)
 
     log_cdf_plus = log_cdf(y_true + half_pixel)
-    log_cdf_min = log_cdf(y_true - half_pixel)
+    log_one_minus_cdf_min = log_one_minus_cdf(y_true - half_pixel)
 
-    cdf_delta = tf.exp(log_cdf_plus) - tf.exp(log_cdf_min)
+    cdf_delta = cdf_plus - cdf_min
     cdf_delta = tf.maximum(cdf_delta, 1e-12)
 
     # At small probabilities the interval difference is approximated
     # as the pdf value at the center
-    approx_log_cdf_delta = log_pdf(y_true) - tf.math.log(255.)
+    approx_log_cdf_delta = log_pdf(y_true) - tf.math.log(127.5)
     log_probs = tf.where(cdf_delta > 1e-5, tf.math.log(cdf_delta), approx_log_cdf_delta)
 
     # Deal with edge cases
-    log_probs = tf.where(y_true > 0.999, 1. - log_cdf_min, log_probs)
-    log_probs = tf.where(y_true < 0.001, log_cdf_plus, log_probs)
+    log_probs = tf.where(y_true > 0.999, log_one_minus_cdf_min, log_probs)
+    log_probs = tf.where(y_true < 0.999, log_cdf_plus, log_probs)
 
     log_probs = tf.reduce_sum(log_probs, axis=3)  # whole pixel prob per component
     log_probs += tf.nn.log_softmax(pi)  #  multiply by mixture components
     log_probs = tf.math.reduce_logsumexp(log_probs, axis=-1)  # add components probs
+    log_probs = tf.reduce_sum(log_probs, axis=[1, 2])
 
     return -log_probs
