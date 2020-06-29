@@ -11,7 +11,7 @@ tfkl = tf.keras.layers
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
 # Training parameters
-EPOCHS = 10
+EPOCHS = 50
 BATCH_SIZE = 64
 BUFFER_SIZE = 1024  # for shuffling
 
@@ -43,14 +43,14 @@ test_ds = (test_ds.batch(BATCH_SIZE)
 # Define model
 strategy = tf.distribute.MirroredStrategy()
 with strategy.scope():
-    model = PixelCNNplus(hidden_dim=32, n_res=3, n_downsampling=2, dropout_rate=.2, n_mix=5)
+    model = PixelCNNplus(hidden_dim=64, n_res=3, n_downsampling=2, dropout_rate=.2, n_mix=5)
     model.compile(optimizer='adam', loss=discretized_logistic_mix_loss)
 
 # Callbacks
 time = datetime.now().strftime('%Y%m%d-%H%M%S')
 log_dir = os.path.join('.', 'logs', 'pixelcnn++', time)
 tensorboard_clbk = tfk.callbacks.TensorBoard(log_dir=log_dir)
-sample_clbk = PlotSamplesCallback(logdir=log_dir)
+sample_clbk = PlotSamplesCallback(logdir=log_dir, period=5)
 reconstruction_clbk = PlotReconstructionCallback(logdir=log_dir, test_ds=test_ds)
 callbacks = [tensorboard_clbk, sample_clbk, reconstruction_clbk]
 

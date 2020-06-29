@@ -6,100 +6,109 @@ tfk = tf.keras
 tfkl = tf.keras.layers
 tfd = tfp.distributions
 
-class MaskedConv2D(tfkl.Layer):
-    def __init__(self, stack, filters, kernel_size, strides=1, padding='SAME',
-                 transpose=False, name='masked_conv'):
-        super(MaskedConv2D, self).__init__(name=name)
-
-        if stack not in {'H', 'V'}:
-            raise ValueError("MaskedConv2D stack should be in (V, H), "
-                            f"got {stack}")
-
-        self.stack = stack
-        self.filters = filters
-        self.kernel_size = kernel_size
-        self.strides = strides
-        self.padding = padding
-        self.transpose = transpose
-
-    def build(self, input_shape):
-        _, H, W, in_ch = input_shape
-        out_ch = self.filters
-
-        if isinstance(self.kernel_size, tuple):
-            k_y, k_x = self.kernel_size
-        else:
-            k_y = self.kernel_size
-            k_x = self.kernel_size
-
-        # Instantiate variables
-        initializer = tfk.initializers.GlorotUniform()
-        self.kernel = tf.Variable(
-            initializer((k_y, k_x, in_ch, out_ch), dtype=tf.float32),
-            trainable=True,
-            aggregation=tf.VariableAggregation.MEAN,
-            name='kernel'
-        )
-
-        self.bias = tf.Variable(
-            initializer((1, 1, 1, out_ch), dtype=tf.float32),
-            trainable=True,
-            aggregation=tf.VariableAggregation.MEAN,
-            name='bias'
-        )
-
-        if self.transpose:
-            self.out_shape = [H * self.strides, W * self.strides, out_ch]
-
-        # Create the mask
-        mid_x, mid_y = k_x // 2, k_y // 2
-
-        # Number of pixels to keep per row depending on stack
-        if self.stack == 'V':
-            pixels_per_row = [k_x] * mid_y + [0] * (k_y - mid_y)
-        else:  # stack == 'H'
-            pixels_per_row = [0] * mid_y + [mid_x] + [0] * (k_y - mid_y - 1)
-
-        pixels_per_row = tf.expand_dims(pixels_per_row, axis=1)
-
-        # Flat 2D masks
-        lines = tf.expand_dims(tf.range(k_x), axis=0)
-        mask = tf.less(lines, pixels_per_row)
-
-        # Expand dims
-        self.mask = tf.tile(mask[:, :, None, None], [1, 1, in_ch, out_ch])
-        self.mask = tf.cast(self.mask, tf.float32)
+class DownShift(tfkl.Layer):
+    def __init__(self, name='down_shift'):
+        super(DownShift, self).__init__(name=name)
+        self.pad = tfkl.ZeroPadding2D(((1,0),(0,0)))
+        self.crop = tfkl.Cropping2D(((0,1),(0,0)))
 
     def call(self, x):
-        if self.transpose:
-            batch_dim = tf.shape(x)[0]
-            output_shape = [batch_dim] + self.out_shape
-            h = tf.nn.conv2d_transpose(
-                input=x,
-                filters=self.kernel * self.mask,
-                strides=self.strides,
-                padding=self.padding,
-                output_shape=output_shape
-            )
-        else:
-            h = tf.nn.conv2d(
-                input=x,
-                filters=self.kernel * self.mask,
-                strides=self.strides,
-                padding=self.padding,
-            )
-        return h + self.bias
+        return self.pad(self.crop(x))
 
-
-class DownRightConv(tfkl.Layer):
-    """Helper class. Sum of a vertical and a horizontal masked conv."""
-    def __init__(self, name='down_right_conv', **kwargs):
-        super(DownRightConv, self).__init__(name=name)
-        self.v_conv = MaskedConv2D(stack='V', **kwargs)
-        self.h_conv = MaskedConv2D(stack='H', **kwargs)
+class RightShift(tfkl.Layer):
+    def __init__(self, name='right_shift'):
+        super(RightShift, self).__init__(name=name)
+        self.pad = tfkl.ZeroPadding2D(((0,0),(1,0)))
+        self.crop = tfkl.Cropping2D(((0,0),(0,1)))
 
     def call(self, x):
-        return self.v_conv(x) + self.h_conv(x)
+        return self.pad(self.crop(x))
+
+class DownShiftedConv(tfkl.Layer):
+    def __init__(self, filters, kernel_size=(2, 3), strides=1, name='down_shifted_conv'):
+        super(DownShiftedConv, self).__init__(name=name)
+
+        self.padding = tfkl.ZeroPadding2D(
+            padding=(
+                (kernel_size[0] - 1, 0),
+                ((kernel_size[1] - 1) // 2, (kernel_size[1] - 1) // 2)
+            )
+        )
+
+        self.conv = tfkl.Conv2D(
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding='valid'
+        )
+
+    def call(self, x):
+        return self.conv(self.padding(x))
+
+class DownShiftedConvTranspose(tfkl.Layer):
+    def __init__(self, filters, kernel_size=(2, 3), strides=1, name='down_shifted_conv_transpose'):
+        super(DownShiftedConvTranspose, self).__init__(name=name)
+
+        self.conv = tfkl.Conv2DTranspose(
+            filters=filters,
+            kernel_size=kernel_size,
+            output_padding=strides - 1,
+            strides=strides,
+            padding='valid'
+        )
+
+        self.crop = tfkl.Cropping2D(
+            cropping=(
+                (0, kernel_size[0] - 1),
+                ((kernel_size[1] - 1) // 2, (kernel_size[1] - 1) // 2)
+            )
+        )
+
+    def call(self, x):
+        return self.crop(self.conv(x))
+
+class DownRightShiftedConv(tfkl.Layer):
+    def __init__(self, filters, kernel_size=(2, 2), strides=1, name='downright_shifted_conv'):
+        super(DownRightShiftedConv, self).__init__(name=name)
+
+        self.padding = tfkl.ZeroPadding2D(
+            padding=(
+                (kernel_size[0] - 1, 0),
+                (kernel_size[1] - 1, 0)
+            )
+        )
+
+        self.conv = tfkl.Conv2D(
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding='valid'
+        )
+
+    def call(self, x):
+        return self.conv(self.padding(x))
+
+class DownRightShiftedConvTranspose(tfkl.Layer):
+    def __init__(self, filters, kernel_size=(2, 2), strides=1, name='downright_shifted_conv_transpose'):
+        super(DownRightShiftedConvTranspose, self).__init__(name=name)
+
+        self.conv = tfkl.Conv2DTranspose(
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            output_padding=strides - 1,
+            padding='valid'
+        )
+
+        self.crop = tfkl.Cropping2D(
+            cropping=(
+                (0, kernel_size[0] - 1),
+                (0, kernel_size[1] - 1)
+            )
+        )
+
+    def call(self, x):
+        return self.crop(self.conv(x))
 
 class ResidualBlock(tfkl.Layer):
     def __init__(self, dropout_rate=0.2, name='pixelcnn_layer'):
@@ -115,35 +124,23 @@ class ResidualBlock(tfkl.Layer):
             name='dropout'
         )
 
-        self.v_conv = MaskedConv2D(
-            stack='V',
+        self.v_conv = DownShiftedConv(
             filters=hidden_dim,
-            kernel_size=(3, 3),
-            padding='SAME',
             name='v_conv'
         )
 
-        self.h_conv = MaskedConv2D(
-            stack='H',
+        self.h_conv = DownRightShiftedConv(
             filters=hidden_dim,
-            kernel_size=(1, 3),
-            padding='SAME',
             name='h_conv'
         )
 
-        self.v_conv_2 = MaskedConv2D(
-            stack='V',
+        self.v_conv_2 = DownShiftedConv(
             filters=2 * hidden_dim,
-            kernel_size=(3, 3),
-            padding='SAME',
             name='v_conv_2'
         )
 
-        self.h_conv_2 = MaskedConv2D(
-            stack='H',
+        self.h_conv_2 = DownRightShiftedConv(
             filters=2 * hidden_dim,
-            kernel_size=(1, 3),
-            padding='SAME',
             name='h_conv_2'
         )
 
@@ -200,27 +197,25 @@ class PixelCNNplus(tfk.Model):
             # pi, mu(R,G,B), sigma(R,G,B), coeffs(alpha, beta, gamma)
             self.n_component_per_mix = 10
 
+        # Shifting
+        self.down_shift = DownShift()
+        self.right_shift = RightShift()
+
         # First convolutions
-        self.first_conv_v = MaskedConv2D(
-            stack='V',
-            kernel_size=(3, 3),
-            padding='SAME',
+        self.first_conv_v = DownShiftedConv(
+            kernel_size=(2, 3),
             filters=self.hidden_dim,
             name='first_conv_v'
         )
 
-        self.first_conv_h_v = MaskedConv2D(
-            stack='V',
-            kernel_size=(3, 3),
-            padding='SAME',
+        self.first_conv_h_v = DownRightShiftedConv(
+            kernel_size=(1, 3),
             filters=self.hidden_dim,
             name='first_conv_h_v'
         )
 
-        self.first_conv_h_h = MaskedConv2D(
-            stack='H',
-            kernel_size=(1, 3),
-            padding='SAME',
+        self.first_conv_h_h = DownShiftedConv(
+            kernel_size=(2, 1),
             filters=self.hidden_dim,
             name='first_conv_h_h'
         )
@@ -236,10 +231,7 @@ class PixelCNNplus(tfk.Model):
         ]
 
         self.downsampling_convs_v = [
-            MaskedConv2D(
-                stack='V',
-                kernel_size=3,
-                padding='SAME',
+            DownShiftedConv(
                 filters=self.hidden_dim,
                 strides=2,
                 name=f'downsampling_conv_v_{i}'
@@ -248,9 +240,7 @@ class PixelCNNplus(tfk.Model):
         ]
 
         self.downsampling_convs_h = [
-            DownRightConv(
-                kernel_size=3,
-                padding='SAME',
+            DownRightShiftedConv(
                 filters=self.hidden_dim,
                 strides=2,
                 name=f'downsampling_conv_h_{i}'
@@ -269,11 +259,7 @@ class PixelCNNplus(tfk.Model):
         ]
 
         self.upsampling_convs_v = [
-            MaskedConv2D(
-                stack='V',
-                transpose=True,
-                kernel_size=3,
-                padding='SAME',
+            DownShiftedConvTranspose(
                 filters=self.hidden_dim,
                 strides=2,
                 name=f'upsampling_conv_v_{i}'
@@ -282,10 +268,7 @@ class PixelCNNplus(tfk.Model):
         ]
 
         self.upsampling_convs_h = [
-            DownRightConv(
-                transpose=True,
-                kernel_size=3,
-                padding='SAME',
+            DownRightShiftedConvTranspose(
                 filters=self.hidden_dim,
                 strides=2,
                 name=f'upsampling_conv_h_{i}'
@@ -328,8 +311,9 @@ class PixelCNNplus(tfk.Model):
 
     def call(self, x, training=False):
         # First convs
-        v_stack = self.first_conv_v(x)
-        h_stack = self.first_conv_h_h(x) + self.first_conv_h_v(x)
+        v_stack = self.down_shift(self.first_conv_v(x))
+        h_stack = self.down_shift(self.first_conv_h_h(x)) + \
+                  self.right_shift(self.first_conv_h_v(x))
 
         # Down pass
         residuals_h, residuals_v = [h_stack], [v_stack]
