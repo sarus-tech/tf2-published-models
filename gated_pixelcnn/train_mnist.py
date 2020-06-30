@@ -43,7 +43,7 @@ test_ds = (test_ds.batch(BATCH_SIZE)
 # Define model
 strategy = tf.distribute.MirroredStrategy()
 with strategy.scope():
-    model = GatedPixelCNN(hidden_dim=32, n_res=3)
+    model = GatedPixelCNN(hidden_dim=64, n_res=5)
     loss = tfk.losses.SparseCategoricalCrossentropy(from_logits=True)
     model.compile(optimizer='adam', loss=loss)
 

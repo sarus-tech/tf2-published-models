@@ -26,7 +26,7 @@ class MaskedConv2D(tfkl.Layer):
         self.padding = padding
 
     def build(self, input_shape):
-        _, H, W, in_ch = input_shape
+        _, _, _, in_ch = input_shape
         out_ch = self.filters
 
         if isinstance(self.kernel_size, tuple):
@@ -58,7 +58,7 @@ class MaskedConv2D(tfkl.Layer):
         if self.stack == 'V':
             # In the vertical stack, there is no difference between type A and B
             pixels_per_row_A = [k_x] * mid_y + [0] * (k_y - mid_y)
-            pixels_per_row_B = [k_x] * mid_y + [0] * (k_y - mid_y)
+            pixels_per_row_B = [k_x] * (mid_y + 1) + [0] * (k_y - mid_y - 1)
         else:
             pixels_per_row_A = [0] * mid_y + [mid_x] + [0] * (k_y - mid_y - 1)
             pixels_per_row_B = [0] * mid_y + [mid_x + 1] + [0] * (k_y - mid_y - 1)
@@ -121,6 +121,7 @@ class ResidualBlock(tfkl.Layer):
 
         self.v_conv = MaskedConv2D(
             stack='V',
+            type='B',
             n_colors=self.n_colors,
             filters=2 * hidden_dim,
             kernel_size=(3, 3),
@@ -181,16 +182,18 @@ class GatedPixelCNN(tfk.Model):
 
         self.conv_v = MaskedConv2D(
             stack='V',
+            type='A',
             n_colors=self.n_colors,
-            kernel_size=7,
+            kernel_size=3,
             padding='SAME',
             filters=self.hidden_dim * self.n_colors
         )
 
         self.conv_h_v = MaskedConv2D(
             stack='V',
+            type='A',
             n_colors=self.n_colors,
-            kernel_size=7,
+            kernel_size=3,
             padding='SAME',
             filters=self.hidden_dim * self.n_colors
         )
@@ -199,7 +202,7 @@ class GatedPixelCNN(tfk.Model):
             stack='H',
             type='A',
             n_colors=self.n_colors,
-            kernel_size=7,
+            kernel_size=(1, 3),
             padding='SAME',
             filters=self.hidden_dim * self.n_colors
         )
