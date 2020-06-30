@@ -16,8 +16,8 @@ BATCH_SIZE = 64
 BUFFER_SIZE = 1024  # for shuffling
 
 # Load dataset
-mnist = tfds.load('mnist')
-train_ds, test_ds = mnist['train'], mnist['test']
+cifar10 = tfds.load('cifar10')
+train_ds, test_ds = cifar10['train'], cifar10['test']
 
 def prepare(element):
     image = element['image']
