@@ -219,3 +219,13 @@ class PixelCNN(tfk.Model):
             samples = tf.tensor_scatter_nd_update(samples, indices, updates)
 
         return samples
+
+def bits_per_dim_loss(y_true, y_pred):
+    """Return the bits per dim value of the predicted distribution."""
+    B, H, W, C = y_true.shape
+    num_pixels = float(H * W * C)
+    log_probs = tf.math.log_softmax(y_pred, axis=-1)
+    log_probs = tf.gather(log_probs, tf.cast(y_true, tf.int32), axis=-1, batch_dims=4)
+    nll = - tf.reduce_sum(log_probs, axis=[1, 2, 3])
+    bits_per_dim = nll / num_pixels / tf.math.log(2.)
+    return bits_per_dim

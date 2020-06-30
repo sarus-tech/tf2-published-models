@@ -309,6 +309,12 @@ class PixelCNNplus(tfk.Model):
             name='final_conv_h'
         )
 
+        self.final_conv = tfkl.Conv2D(
+            filters = self.n_mix * self.n_component_per_mix,
+            kernel_size = 1,
+            name='final_conv'
+        )
+
     def call(self, x, training=False):
         # First convs
         v_stack = self.down_shift(self.first_conv_v(x))
@@ -323,8 +329,8 @@ class PixelCNNplus(tfk.Model):
                 residuals_h.append(h_stack)
                 residuals_v.append(v_stack)
             if ds < self.n_downsampling:
-                v_stack = self.downsampling_convs_v[ds](v_stack)
-                h_stack = self.downsampling_convs_h[ds](h_stack)
+                v_stack = self.downsampling_convs_v[ds](tf.nn.relu(v_stack))
+                h_stack = self.downsampling_convs_h[ds](tf.nn.relu(h_stack))
                 residuals_h.append(h_stack)
                 residuals_v.append(v_stack)
 
@@ -348,13 +354,15 @@ class PixelCNNplus(tfk.Model):
                 v_stack += residuals_v.pop()
                 h_stack += residuals_h.pop()
             if us < self.n_downsampling:
-                v_stack = self.upsampling_convs_v[us](v_stack)
-                h_stack = self.upsampling_convs_h[us](h_stack)
+                v_stack = self.upsampling_convs_v[us](tf.nn.relu(v_stack))
+                h_stack = self.upsampling_convs_h[us](tf.nn.relu(h_stack))
                 v_stack += residuals_v.pop()
                 h_stack += residuals_h.pop()
 
         # Final conv
-        outputs = self.final_conv_h(h_stack) + self.final_conv_v(v_stack)
+        outputs = self.final_conv_h(tf.nn.relu(h_stack)) + \
+                  self.final_conv_v(tf.nn.relu(v_stack))
+        outputs = self.final_conv(tf.nn.relu(outputs))
 
         return outputs
 
@@ -382,8 +390,8 @@ class PixelCNNplus(tfk.Model):
                 beta = tf.math.tanh(beta)
                 gamma = tf.math.tanh(gamma)
 
-                mu_g = mu_g + alpha * mu_r
-                mu_b = mu_b + beta * mu_r + gamma * mu_g
+                # mu_g = mu_g + alpha * mu_r
+                # mu_b = mu_b + beta * mu_r + gamma * mu_g
                 mu = tf.stack([mu_r, mu_g, mu_b], axis=2)
                 logvar = tf.stack([logvar_r, logvar_g, logvar_b], axis=2)
 
@@ -397,23 +405,33 @@ class PixelCNNplus(tfk.Model):
             # Sample colors
             u = tf.random.uniform(tf.shape(mu), minval=1e-5, maxval=1. - 1e-5)
             x = mu + tf.exp(logvar) * (tf.math.log(u) - tf.math.log(1. - u))
-            updates = tf.clip_by_value(x, -1., 1.)
+
+            # Readjust means
             if channels == 3:
-                updates = updates[:, 0, :]
+                alpha = tf.gather(alpha, components, axis=1, batch_dims=1)
+                beta = tf.gather(beta, components, axis=1, batch_dims=1)
+                gamma = tf.gather(gamma, components, axis=1, batch_dims=1)
+                x_r = x[:, 0, 0]
+                x_g = x[:, 0, 1] + alpha[:, 0] * x_r
+                x_b = x[:, 0, 2] + beta[:, 0] * x_r + gamma[:, 0] * x_g
+                x = tf.stack([x_r, x_g, x_b], axis=-1)
+
+            updates = tf.clip_by_value(x, -1., 1.)
             indices = tf.constant([[i, h, w] for i in range(n)])
             samples = tf.tensor_scatter_nd_update(samples, indices, updates)
 
         return samples
 
 def discretized_logistic_mix_loss(y_true, y_pred):
-    # y_true shape (batch_size, H, W, channels)
-    n_channels = y_true.shape[-1]
+    # y_true shape (batch_size, H, W, C)
+    _, H, W, C = y_true.shape
+    num_pixels = float(H * W * C)
 
-    if n_channels == 1:
+    if C == 1:
         pi, mu, logvar = tf.split(y_pred, num_or_size_splits=3, axis=-1)
         mu = tf.expand_dims(mu, axis=3)
         logvar = tf.expand_dims(logvar, axis=3)
-    else:  # n_channels == 3
+    else:  # C == 3
         (pi, mu_r, mu_g, mu_b, logvar_r, logvar_g, logvar_b, alpha,
          beta, gamma) = tf.split(y_pred, num_or_size_splits=10, axis=-1)
 
@@ -421,8 +439,11 @@ def discretized_logistic_mix_loss(y_true, y_pred):
         beta = tf.math.tanh(beta)
         gamma = tf.math.tanh(gamma)
 
-        mu_g = mu_g + alpha * mu_r
-        mu_b = mu_b + beta * mu_r + gamma * mu_g
+        red = y_true[:,:,:,0:1]
+        green = y_true[:,:,:,1:2]
+
+        mu_g = mu_g + alpha * red
+        mu_b = mu_b + beta * red + gamma * green
         mu = tf.stack([mu_r, mu_g, mu_b], axis=3)
         logvar = tf.stack([logvar_r, logvar_g, logvar_b], axis=3)
 
@@ -462,11 +483,14 @@ def discretized_logistic_mix_loss(y_true, y_pred):
 
     # Deal with edge cases
     log_probs = tf.where(y_true > 0.999, log_one_minus_cdf_min, log_probs)
-    log_probs = tf.where(y_true < 0.999, log_cdf_plus, log_probs)
+    log_probs = tf.where(y_true < -0.999, log_cdf_plus, log_probs)
 
     log_probs = tf.reduce_sum(log_probs, axis=3)  # whole pixel prob per component
     log_probs += tf.nn.log_softmax(pi)  #  multiply by mixture components
     log_probs = tf.math.reduce_logsumexp(log_probs, axis=-1)  # add components probs
     log_probs = tf.reduce_sum(log_probs, axis=[1, 2])
 
-    return -log_probs
+    # Convert to bits per dim
+    bits_per_dim = -log_probs / num_pixels / tf.math.log(2.)
+
+    return bits_per_dim

@@ -3,7 +3,7 @@ from datetime import datetime
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from model import GatedPixelCNN
+from model import GatedPixelCNN, bits_per_dim_loss
 from utils import PlotSamplesCallback
 
 tfk = tf.keras
@@ -11,7 +11,7 @@ tfkl = tf.keras.layers
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
 # Training parameters
-EPOCHS = 10
+EPOCHS = 75
 BATCH_SIZE = 64
 BUFFER_SIZE = 1024  # for shuffling
 
@@ -43,9 +43,8 @@ test_ds = (test_ds.batch(BATCH_SIZE)
 # Define model
 strategy = tf.distribute.MirroredStrategy()
 with strategy.scope():
-    model = GatedPixelCNN(hidden_dim=64, n_res=5)
-    loss = tfk.losses.SparseCategoricalCrossentropy(from_logits=True)
-    model.compile(optimizer='adam', loss=loss)
+    model = GatedPixelCNN(hidden_dim=64, n_res=6)
+    model.compile(optimizer='adam', loss=bits_per_dim_loss)
 
 # Callbacks
 time = datetime.now().strftime('%Y%m%d-%H%M%S')

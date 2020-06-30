@@ -202,7 +202,7 @@ class GatedPixelCNN(tfk.Model):
             stack='H',
             type='A',
             n_colors=self.n_colors,
-            kernel_size=(1, 3),
+            kernel_size=3,
             padding='SAME',
             filters=self.hidden_dim * self.n_colors
         )
@@ -211,6 +211,18 @@ class GatedPixelCNN(tfk.Model):
             ResidualBlock(n_colors=self.n_colors, name=f'res_block{i}')
             for i in range(self.n_res)
         ]
+
+        self.final_conv_h = tfkl.Conv2D(
+            filters = self.n_output * self.n_colors,
+            kernel_size = 1,
+            name='final_conv_h'
+        )
+
+        self.final_conv_v = tfkl.Conv2D(
+            filters = self.n_output * self.n_colors,
+            kernel_size = 1,
+            name='final_conv_v'
+        )
 
         self.final_conv = tfkl.Conv2D(
             filters = self.n_output * self.n_colors,
@@ -225,7 +237,10 @@ class GatedPixelCNN(tfk.Model):
         for res_block in self.res_blocks:
             v_stack, h_stack = res_block(v_stack, h_stack)
 
-        h = self.final_conv(tf.nn.relu(v_stack + h_stack))
+        h = self.final_conv_h(tf.nn.relu(h_stack)) + \
+            self.final_conv_v(tf.nn.relu(v_stack))
+
+        h = self.final_conv(tf.nn.relu(h))
 
         # Format output
         h = tf.split(h, num_or_size_splits=self.n_colors, axis=-1)
@@ -254,3 +269,13 @@ class GatedPixelCNN(tfk.Model):
             samples = tf.tensor_scatter_nd_update(samples, indices, updates)
 
         return samples
+
+def bits_per_dim_loss(y_true, y_pred):
+    """Return the bits per dim value of the predicted distribution."""
+    B, H, W, C = y_true.shape
+    num_pixels = float(H * W * C)
+    log_probs = tf.math.log_softmax(y_pred, axis=-1)
+    log_probs = tf.gather(log_probs, tf.cast(y_true, tf.int32), axis=-1, batch_dims=4)
+    nll = - tf.reduce_sum(log_probs, axis=[1, 2, 3])
+    bits_per_dim = nll / num_pixels / tf.math.log(2.)
+    return bits_per_dim

@@ -4,7 +4,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from model import PixelCNNplus, discretized_logistic_mix_loss
-from utils import PlotSamplesCallback, PlotReconstructionCallback
+from utils import PlotSamplesCallback
 
 tfk = tf.keras
 tfkl = tf.keras.layers
@@ -50,8 +50,7 @@ with strategy.scope():
 time = datetime.now().strftime('%Y%m%d-%H%M%S')
 log_dir = os.path.join('.', 'logs', 'pixelcnn++', time)
 tensorboard_clbk = tfk.callbacks.TensorBoard(log_dir=log_dir)
-sample_clbk = PlotSamplesCallback(logdir=log_dir, period=5)
-reconstruction_clbk = PlotReconstructionCallback(logdir=log_dir, test_ds=test_ds)
+sample_clbk = PlotSamplesCallback(logdir=log_dir, period=1)
 callbacks = [tensorboard_clbk, sample_clbk, reconstruction_clbk]
 
 # Fit
