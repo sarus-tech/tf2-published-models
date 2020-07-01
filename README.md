@@ -4,6 +4,10 @@ Sarus implementation of classical ML models. The models are implemented using th
 
 The required packages are managed with `pipenv` and can be installed using `pipenv install`. Please see the [pipenv documentation](https://pipenv-fork.readthedocs.io/en/latest/) for more information.
 
+## Philosophy
+
+These models' implementations are intended to be easy to read and to adapt by making use of the latest Tensorflow 2 library and Keras API.
+
 ## Basic usage
 
 To install and train a model.
@@ -28,3 +32,4 @@ tensorboard --logdir ./logs/
 * PixelCNN
 * Gated PixelCNN
 * PixelCNN++
+* PixelSNAIL
