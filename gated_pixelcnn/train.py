@@ -4,7 +4,7 @@ from datetime import datetime
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from model import PixelCNNplus, discretized_logistic_mix_loss
+from model import GatedPixelCNN, bits_per_dim_loss
 from utils import PlotSamplesCallback
 
 tfk = tf.keras
@@ -20,11 +20,8 @@ parser.add_argument('-d', '--dataset', type=str, default='mnist', help='Dataset:
 parser.add_argument('-lr', '--learning_rate', type=float, default=0.001, help='Learning rate')
 parser.add_argument('-dc', '--lr_decay', type=float, default=0.999995, help='Learning rate decay')
 
-parser.add_argument('-hd', '--hidden_dim', type=int, default=64, help='Hidden dimension')
-parser.add_argument('-n', '--n_res', type=int, default=4, help='Number of res blocks per downsampling step')
-parser.add_argument('-ds', '--downsampling', type=int, default=2, help='Number of downsampling steps')
-parser.add_argument('-m', '--n_mix', type=int, default=5, help='Number of components in logistic mix')
-parser.add_argument('-p', '--dropout', type=float, default=.5, help='Dropout rate')
+parser.add_argument('-hd', '--hidden_dim', type=int, default=64, help='Hidden dimension per channel')
+parser.add_argument('-n', '--n_res', type=int, default=4, help='Number of res blocks')
 
 args = parser.parse_args()
 
@@ -40,7 +37,7 @@ train_ds, test_ds = dataset['train'], dataset['test']
 def prepare(element):
     image = element['image']
     image = tf.cast(image, tf.float32)
-    image = image / 127.5 - 1.  # normalize between -1 and 1
+    # The image is not normalized
     return image
 
 # PixelCNN training requires target = input
@@ -61,14 +58,11 @@ test_ds = (test_ds.batch(BATCH_SIZE)
 # Define model
 strategy = tf.distribute.MirroredStrategy()
 with strategy.scope():
-    model = PixelCNNplus(
+    model = GatedPixelCNN(
         hidden_dim=args.hidden_dim,
-        n_res=args.n_res,
-        n_downsampling=args.downsampling,
-        dropout_rate=args.dropout,
-        n_mix=args.n_mix
+        n_res=args.n_res
     )
-    model.compile(optimizer='adam', loss=discretized_logistic_mix_loss)
+    model.compile(optimizer='adam', loss=bits_per_dim_loss)
 
 # Learning rate scheduler
 steps_per_epochs = info.splits['train'].num_examples // args.batch
@@ -81,9 +75,9 @@ schedule = tfk.optimizers.schedules.ExponentialDecay(
 
 # Callbacks
 time = datetime.now().strftime('%Y%m%d-%H%M%S')
-log_dir = os.path.join('.', 'logs', 'pixelcnn++', time)
+log_dir = os.path.join('.', 'logs', 'gatedpixelcnn', time)
 tensorboard_clbk = tfk.callbacks.TensorBoard(log_dir=log_dir)
-sample_clbk = PlotSamplesCallback(logdir=log_dir, period=1, nex=8)
+sample_clbk = PlotSamplesCallback(logdir=log_dir)
 scheduler_clbk = tfk.callbacks.LearningRateScheduler(schedule)
 callbacks = [tensorboard_clbk, sample_clbk, scheduler_clbk]
 
