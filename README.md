@@ -26,7 +26,7 @@ tensorboard --logdir ./logs/
 
 ## Available models
 
-* Simple Autoencoder
+* [Simple Autoencoder](./simple_autoencoder)
 * Variational Autoencoder (VAE)
 * Vector Quantized Autoencoder (VQ-VAE)
 * PixelCNN
