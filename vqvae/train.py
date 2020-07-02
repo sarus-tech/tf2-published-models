@@ -1,4 +1,5 @@
 import os
+import argparse
 from datetime import datetime
 import tensorflow as tf
 import tensorflow_datasets as tfds
@@ -10,10 +11,18 @@ tfk = tf.keras
 tfkl = tf.keras.layers
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
+# Parse arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('-e', '--epochs', type=int, default=10, help='Number of training epochs')
+parser.add_argument('-b', '--batch', type=int, default=64, help='Batch size for training')
+parser.add_argument('-bf', '--buffer', type=int, default=1024, help='Buffer size for shuffling')
+
+args = parser.parse_args()
+
 # Training parameters
-EPOCHS = 10
-BATCH_SIZE = 64
-BUFFER_SIZE = 1024  # for shuffling
+EPOCHS = args.epochs
+BATCH_SIZE = args.batch
+BUFFER_SIZE = args.buffer  # for shuffling
 
 # Load dataset
 mnist = tfds.load('mnist')

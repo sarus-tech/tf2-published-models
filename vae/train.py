@@ -1,19 +1,28 @@
 import os
+import argparse
 from datetime import datetime
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-from model import SimpleAutoencoder
+from model import VAE
 from utils import PlotReconstructionCallback
 
 tfk = tf.keras
 tfkl = tf.keras.layers
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
+# Parse arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('-e', '--epochs', type=int, default=10, help='Number of training epochs')
+parser.add_argument('-b', '--batch', type=int, default=64, help='Batch size for training')
+parser.add_argument('-bf', '--buffer', type=int, default=1024, help='Buffer size for shuffling')
+
+args = parser.parse_args()
+
 # Training parameters
-EPOCHS = 10
-BATCH_SIZE = 64
-BUFFER_SIZE = 1024  # for shuffling
+EPOCHS = args.epochs
+BATCH_SIZE = args.batch
+BUFFER_SIZE = args.buffer  # for shuffling
 
 # Load dataset
 mnist = tfds.load('mnist')
@@ -45,7 +54,7 @@ encoder = tfk.Sequential([
     tfkl.Conv2D(filters=16, kernel_size=3, strides=2, padding='same', activation='relu'),
     tfkl.Conv2D(filters=32, kernel_size=3, strides=2, padding='same', activation='relu'),
     tfkl.Flatten(),
-    tfkl.Dense(units=10),  # no activation
+    tfkl.Dense(units=2 * 10),  # no activation
 ])
 
 decoder = tfk.Sequential([
@@ -56,12 +65,12 @@ decoder = tfk.Sequential([
 ])
 
 # Define model
-model = SimpleAutoencoder(encoder, decoder)
+model = VAE(encoder, decoder)
 model.compile(optimizer='adam', loss='mse')
 
 # Callbacks
 time = datetime.now().strftime('%Y%m%d-%H%M%S')
-log_dir = os.path.join('.', 'logs', 'simple_autoencoder', time)
+log_dir = os.path.join('.', 'logs', 'vae', time)
 tensorboard_clbk = tfk.callbacks.TensorBoard(log_dir=log_dir)
 plot_clbk = PlotReconstructionCallback(logdir=log_dir, test_ds=test_ds, nex=4)
 callbacks = [tensorboard_clbk, plot_clbk]
