@@ -111,7 +111,7 @@ class MaskedConv2D(tfkl.Layer):
         return h + self.bias
 
 class ResidualBlock(tfkl.Layer):
-    def __init__(self, n_colors, name='pixelcnn_layer'):
+    def __init__(self, n_colors, name='residual_block'):
         super(ResidualBlock, self).__init__(name=name)
         self.n_colors = n_colors
 
@@ -272,7 +272,7 @@ class GatedPixelCNN(tfk.Model):
 
 def bits_per_dim_loss(y_true, y_pred):
     """Return the bits per dim value of the predicted distribution."""
-    B, H, W, C = y_true.shape
+    _, H, W, C = y_true.shape
     num_pixels = float(H * W * C)
     log_probs = tf.math.log_softmax(y_pred, axis=-1)
     log_probs = tf.gather(log_probs, tf.cast(y_true, tf.int32), axis=-1, batch_dims=4)
