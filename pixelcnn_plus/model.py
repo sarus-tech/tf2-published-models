@@ -1,10 +1,8 @@
 import tensorflow as tf
-import tensorflow_probability as tfp
 from tqdm import tqdm
 
 tfk = tf.keras
 tfkl = tf.keras.layers
-tfd = tfp.distributions
 
 class DownShift(tfkl.Layer):
     def __init__(self, name='down_shift'):
@@ -390,8 +388,6 @@ class PixelCNNplus(tfk.Model):
                 beta = tf.math.tanh(beta)
                 gamma = tf.math.tanh(gamma)
 
-                # mu_g = mu_g + alpha * mu_r
-                # mu_b = mu_b + beta * mu_r + gamma * mu_g
                 mu = tf.stack([mu_r, mu_g, mu_b], axis=2)
                 logvar = tf.stack([logvar_r, logvar_g, logvar_b], axis=2)
 
