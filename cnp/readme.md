@@ -28,5 +28,5 @@ python train.py -h
 
 To see visualizations use
 ```shell
-tensorboard --lordir ./logs
+tensorboard --logdir ./logs
 ```
