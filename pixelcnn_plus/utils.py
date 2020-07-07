@@ -22,13 +22,13 @@ def plot_to_image(figure):
     return image
 
 class PlotSamplesCallback(tfk.callbacks.Callback):
-    """Plot `nex` reconstructed image to tensorboard."""
-    def __init__(self, logdir: str, nex: int=4, period: int=1):
+    """Plot `nex` sampled images to tensorboard."""
+    def __init__(self, logdir: str, num_classes: int=-1, nex: int=4):
         super(PlotSamplesCallback, self).__init__()
         logdir = os.path.join(logdir, 'samples')
         self.file_writer = tf.summary.create_file_writer(logdir=logdir)
         self.nex = nex
-        self.period = period
+        self.num_classes = num_classes
 
     def plot_img(self, image):
         fig, ax = plt.subplots(nrows=1, ncols=1)
@@ -42,20 +42,31 @@ class PlotSamplesCallback(tfk.callbacks.Callback):
 
         return fig
 
-    def on_epoch_end(self, epoch, logs=None):
-        if (epoch + 1) %  self.period == 0:
+    def on_batch_end(self, epoch, logs=None):
+        if self.num_classes > 0:
+            context = tf.random.uniform(
+                (self.nex,),
+                minval=0,
+                maxval=self.num_classes,
+                dtype=tf.int32
+            )
+            context_oh = tf.one_hot(context, depth=self.num_classes)
+            images = self.model.sample(self.nex, context_oh)
+        else:
             images = self.model.sample(self.nex)
 
-            imgs = []
-            for i in range(self.nex):
-                fig = self.plot_img(images[i])
-                imgs.append(plot_to_image(fig))
+        imgs = []
+        for i in range(self.nex):
+            fig = self.plot_img(images[i])
+            if self.num_classes > 0:
+                fig.suptitle(f'Context {context[i]}')
+            imgs.append(plot_to_image(fig))
 
-            imgs = tf.concat(imgs, axis=0)
-            with self.file_writer.as_default():
-                tf.summary.image(
-                    name='Samples',
-                    data=imgs,
-                    step=epoch,
-                    max_outputs=self.nex
-                )
+        imgs = tf.concat(imgs, axis=0)
+        with self.file_writer.as_default():
+            tf.summary.image(
+                name='Samples',
+                data=imgs,
+                step=epoch,
+                max_outputs=self.nex
+            )

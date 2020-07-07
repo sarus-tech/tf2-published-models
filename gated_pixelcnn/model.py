@@ -1,3 +1,4 @@
+from collections.abc import Container
 import tensorflow as tf
 from tqdm import tqdm
 
@@ -116,15 +117,17 @@ class ResidualBlock(tfkl.Layer):
         self.n_colors = n_colors
 
     def build(self, input_shape):
-        # input_shape (batch_size, height, width, hidden_dim)
-        hidden_dim = input_shape[-1]
+        # inputs = (v_stack, h_stack, context)
+        image_shape, _, context_shape = input_shape
+        # image_shape (batch_size, height, width, hidden_dim)
+        hidden_dim = image_shape[-1]
 
         self.v_conv = MaskedConv2D(
             stack='V',
             type='B',
             n_colors=self.n_colors,
             filters=2 * hidden_dim,
-            kernel_size=(3, 3),
+            kernel_size=(5, 5),
             padding='SAME',
             name='v_conv'
         )
@@ -134,7 +137,7 @@ class ResidualBlock(tfkl.Layer):
             type='B',
             n_colors=self.n_colors,
             filters=2 * hidden_dim,
-            kernel_size=(1, 3),
+            kernel_size=(1, 5),
             padding='SAME',
             name='h_conv'
         )
@@ -151,12 +154,31 @@ class ResidualBlock(tfkl.Layer):
             name='res_conv'
         )
 
-    def call(self, v_stack, h_stack):
+        if len(context_shape) > 0:
+            self.has_context = True
+            self.context_v = tfkl.Dense(
+                units = 2 * hidden_dim,
+                name='context_v'
+            )
+
+            self.context_h = tfkl.Dense(
+                units = 2 * hidden_dim,
+                name='context_h'
+            )
+        else:
+            self.has_context = False
+
+    def call(self, inputs):
+        v_stack, h_stack, context = inputs
         # First convs
         hidden_v = self.v_conv(tf.nn.relu(v_stack))
         hidden_h = self.h_conv(tf.nn.relu(h_stack))
         # Skip connection
         hidden_h += self.skip_conv(tf.nn.relu(hidden_v))
+        # Add context
+        if self.has_context:
+            hidden_h += self.context_h(context)[:, None, None, :]
+            hidden_v += self.context_v(context)[:, None, None, :]
         # Gated operations
         tanh_h, sigmoid_h = tf.split(hidden_h, num_or_size_splits=2, axis=-1)
         tanh_v, sigmoid_v = tf.split(hidden_v, num_or_size_splits=2, axis=-1)
@@ -175,7 +197,15 @@ class GatedPixelCNN(tfk.Model):
         self.hidden_dim = hidden_dim
         self.n_output = n_output
 
+    def unpack(self, inputs):
+        if isinstance(inputs, Container):
+            x, context = inputs
+        else:
+            x, context = inputs, tf.constant(0.)
+        return x, context
+
     def build(self, input_shape):
+        input_shape, _ = self.unpack(input_shape)
         # Save image shape for generation
         self.image_shape = input_shape[1:]
         self.n_colors = input_shape[-1]
@@ -184,7 +214,7 @@ class GatedPixelCNN(tfk.Model):
             stack='V',
             type='A',
             n_colors=self.n_colors,
-            kernel_size=3,
+            kernel_size=5,
             padding='SAME',
             filters=self.hidden_dim * self.n_colors
         )
@@ -193,7 +223,7 @@ class GatedPixelCNN(tfk.Model):
             stack='V',
             type='A',
             n_colors=self.n_colors,
-            kernel_size=3,
+            kernel_size=5,
             padding='SAME',
             filters=self.hidden_dim * self.n_colors
         )
@@ -202,7 +232,7 @@ class GatedPixelCNN(tfk.Model):
             stack='H',
             type='A',
             n_colors=self.n_colors,
-            kernel_size=3,
+            kernel_size=5,
             padding='SAME',
             filters=self.hidden_dim * self.n_colors
         )
@@ -230,12 +260,16 @@ class GatedPixelCNN(tfk.Model):
             name='final_conv'
         )
 
-    def call(self, x):
+    def call(self, inputs):
+        # Unpack inputs, check for context
+        x, context = self.unpack(inputs)
+
+        # First layers
         v_stack = self.conv_v(x)
         h_stack = self.conv_h_v(x) + self.conv_h_h(x)
 
         for res_block in self.res_blocks:
-            v_stack, h_stack = res_block(v_stack, h_stack)
+            v_stack, h_stack = res_block((v_stack, h_stack, context))
 
         h = self.final_conv_h(tf.nn.relu(h_stack)) + \
             self.final_conv_v(tf.nn.relu(v_stack))
@@ -248,8 +282,15 @@ class GatedPixelCNN(tfk.Model):
 
         return outputs
 
+    def sample(self, n, context=tf.constant(0.)):
+        """`context` can either be a Tensor of rank 0 indicating no context,
+        a Tensor of rank 1 indicating that the same context should be used
+        for all samples, or a Tensor of rank 2 where the first dimention is
+        equal to `n` indicating a different context for each sample"""
+        # Duplicate context for each sample
+        if tf.rank(context) == 1:
+            context = tf.tile(context[None, :], [n, 1])
 
-    def sample(self, n):
         # Start with random noise
         height, width, channels = self.image_shape
         n_pixels = height * width * channels
@@ -263,12 +304,13 @@ class GatedPixelCNN(tfk.Model):
             c = pos % channels
             h = (pos // channels) // height
             w = (pos // channels) % height
-            logits = self(samples)[:, h, w, c]
+            logits = self((samples, context))[:, h, w, c]
             updates = tf.squeeze(tf.cast(tf.random.categorical(logits, 1), tf.float32))
             indices = tf.constant([[i, h, w, c] for i in range(n)])
             samples = tf.tensor_scatter_nd_update(samples, indices, updates)
 
         return samples
+
 
 def bits_per_dim_loss(y_true, y_pred):
     """Return the bits per dim value of the predicted distribution."""
