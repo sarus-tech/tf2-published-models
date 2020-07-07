@@ -32,3 +32,4 @@ tensorboard --logdir ./logs/
 * [PixelCNN](./pixelcnn)
 * [Gated PixelCNN](./gated_pixelcnn)
 * [PixelCNN++](./pixelcnn_plus)
+* [Conditional Neural Processes](./cnp)

@@ -11,8 +11,11 @@ python train.py -t mnist
 python train.py -r regression
 ```
 
-To see all training options use
+On MNIST, the CNP is trained with a context size varying between 10 and 100 points.
 
+On the regression task, the CNP is trained with a context size varying between 2 and 10 points.
+
+To see all training options use :
 ```shell
 python train.py -h
 ```
