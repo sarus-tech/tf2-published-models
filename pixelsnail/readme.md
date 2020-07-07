@@ -1,6 +1,6 @@
 # PixelSNAIL
 
-Tensorflow 2 implementation of [PixelSNAIL](https://arxiv.org/pdf/1712.09763.pdf.
+Tensorflow 2 implementation of [PixelSNAIL](https://arxiv.org/pdf/1712.09763.pdf).
 
 ## Usage
 
