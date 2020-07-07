@@ -96,24 +96,40 @@ def plot_image(target_x, target_y, context_x, context_y, pred_y):
     updates = tf.tile(context_y[0], [1, 3])
     context_img = tf.tensor_scatter_nd_update(blue_img, indices, updates)
     axes[0].imshow(context_img.numpy())
+    axes[0].axis('off')
+    axes[0].set_title('Given context')
     # Plot mean and variance
     mean = tf.tile(tf.reshape(mu[0], (28, 28, 1)), [1, 1, 3])
     var = tf.tile(tf.reshape(sigma[0], (28, 28, 1)), [1, 1, 3])
     axes[1].imshow(mean.numpy(), vmin=0., vmax=1.)
     axes[2].imshow(var.numpy(), vmin=0., vmax=1.)
+    axes[1].axis('off')
+    axes[2].axis('off')
+    axes[1].set_title('Predicted mean')
+    axes[2].set_title('Predicted variance')
     return fig
 
 
 class PlotCallback(tfk.callbacks.Callback):
-    def __init__(self, logdir, ds, type):
+    def __init__(self, logdir, ds, task):
         super(PlotCallback, self).__init__()
         self.ds = iter(ds)
         logdir += '/plots'
         self.file_writer = tf.summary.create_file_writer(logdir=logdir)
-        self.plot_fn = plot_image if type == 'image' else plot_regression
+        self.plot_fn = plot_image if task == 'mnist' else plot_regression
+        self.test_ds = ds
+        self.test_it = iter(self.test_ds)
+
+    def get_next_data(self):
+        try:
+            next_data = next(self.test_it)
+        except StopIteration:
+            self.test_it = iter(self.test_ds)
+            next_data = next(self.test_it)
+        return next_data
 
     def on_epoch_end(self, epoch, logs=None):
-        (context_x, context_y, target_x), target_y = next(self.ds)
+        (context_x, context_y, target_x), target_y = self.get_next_data()
         pred_y = self.model((context_x, context_y, target_x))
         fig = self.plot_fn(target_x, target_y, context_x, context_y, pred_y)
         fig.suptitle(f'loss {logs["loss"]:.5f}')
