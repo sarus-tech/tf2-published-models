@@ -33,3 +33,4 @@ tensorboard --logdir ./logs/
 * [Gated PixelCNN](./gated_pixelcnn)
 * [PixelCNN++](./pixelcnn_plus)
 * [Conditional Neural Processes](./cnp)
+* [PixelSNAIL](./pixelsnail)
