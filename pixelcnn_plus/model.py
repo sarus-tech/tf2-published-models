@@ -1,3 +1,4 @@
+from collections.abc import Container
 import tensorflow as tf
 from tqdm import tqdm
 
@@ -114,6 +115,7 @@ class ResidualBlock(tfkl.Layer):
         self.dropout_rate = dropout_rate
 
     def build(self, input_shape):
+        input_shape, _, context_shape = input_shape
         # input_shape (batch_size, height, width, hidden_dim)
         hidden_dim = input_shape[-1]
 
@@ -148,7 +150,22 @@ class ResidualBlock(tfkl.Layer):
             name='skip_conv'
         )
 
-    def call(self, v_stack, h_stack, training=False):
+        if len(context_shape) > 0:
+            self.has_context = True
+            self.context_v = tfkl.Dense(
+                units = 2 * hidden_dim,
+                name='context_v'
+            )
+
+            self.context_h = tfkl.Dense(
+                units = 2 * hidden_dim,
+                name='context_h'
+            )
+        else:
+            self.has_context = False
+
+    def call(self, inputs, training=False):
+        v_stack, h_stack, context = inputs
         # First convs
         hidden_v = self.v_conv(tf.nn.relu(v_stack))
         hidden_h = self.h_conv(tf.nn.relu(h_stack))
@@ -160,6 +177,10 @@ class ResidualBlock(tfkl.Layer):
         # Second convs
         hidden_v = self.v_conv_2(tf.nn.relu(hidden_v))
         hidden_h = self.h_conv_2(tf.nn.relu(hidden_h))
+        # Add context
+        if self.has_context:
+            hidden_h += self.context_h(context)[:, None, None, :]
+            hidden_v += self.context_v(context)[:, None, None, :]
         # Gated operations
         h, sigmoid_h = tf.split(hidden_h, num_or_size_splits=2, axis=-1)
         v, sigmoid_v = tf.split(hidden_v, num_or_size_splits=2, axis=-1)
@@ -183,7 +204,15 @@ class PixelCNNplus(tfk.Model):
         self.n_downsampling = n_downsampling
         self.dropout_rate = dropout_rate
 
+    def unpack(self, inputs):
+        if isinstance(inputs, Container):
+            x, context = inputs
+        else:
+            x, context = inputs, tf.constant(0.)
+        return x, context
+
     def build(self, input_shape):
+        input_shape, _ = self.unpack(input_shape)
         # Save image shape for generation
         self.image_shape = input_shape[1:]
         n_channels = input_shape[-1]
@@ -313,7 +342,10 @@ class PixelCNNplus(tfk.Model):
             name='final_conv'
         )
 
-    def call(self, x, training=False):
+    def call(self, inputs, training=False):
+        # Unpack inputs, check for context
+        x, context = self.unpack(inputs)
+
         # First convs
         v_stack = self.down_shift(self.first_conv_v(x))
         h_stack = self.down_shift(self.first_conv_h_h(x)) + \
@@ -323,7 +355,7 @@ class PixelCNNplus(tfk.Model):
         residuals_h, residuals_v = [h_stack], [v_stack]
         for ds in range(self.n_downsampling  + 1):
             for res_block in self.downsampling_res_blocks[ds]:
-                v_stack, h_stack = res_block(v_stack, h_stack, training)
+                v_stack, h_stack = res_block((v_stack, h_stack, context), training)
                 residuals_h.append(h_stack)
                 residuals_v.append(v_stack)
             if ds < self.n_downsampling:
@@ -348,7 +380,7 @@ class PixelCNNplus(tfk.Model):
         h_stack = residuals_h.pop()
         for us in range(self.n_downsampling + 1):
             for res_block in self.upsampling_res_blocks[us]:
-                v_stack, h_stack = res_block(v_stack, h_stack, training)
+                v_stack, h_stack = res_block((v_stack, h_stack, context), training)
                 v_stack += residuals_v.pop()
                 h_stack += residuals_h.pop()
             if us < self.n_downsampling:
@@ -364,7 +396,15 @@ class PixelCNNplus(tfk.Model):
 
         return outputs
 
-    def sample(self, n):
+    def sample(self, n, context=tf.constant(0.)):
+        """`context` can either be a Tensor of rank 0 indicating no context,
+        a Tensor of rank 1 indicating that the same context should be used
+        for all samples, or a Tensor of rank 2 where the first dimention is
+        equal to `n` indicating a different context for each sample"""
+        # Duplicate context for each sample
+        if tf.rank(context) == 1:
+            context = tf.tile(context[None, :], [n, 1])
+
         # Start with random noise
         height, width, channels = self.image_shape
         n_pixels = height * width
@@ -375,7 +415,7 @@ class PixelCNNplus(tfk.Model):
         for pos in tqdm(range(n_pixels), desc="Sampling PixelCNN++"):
             h = pos // height
             w = pos % height
-            logits = self(samples)[:, h, w, :]  # (batch_size, 1, 1, n_components)
+            logits = self((samples, context))[:, h, w, :]  # (batch_size, 1, 1, n_components)
 
             # Get distributions mean and variance
             if channels == 1:

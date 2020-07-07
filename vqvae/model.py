@@ -98,6 +98,36 @@ class VQVAE(tfk.Model):
         self.quantizer = VectorQuantizerEMA(codebook_size)
         self.beta = beta
 
+    def quantize(self, x):
+        """Transform an input image to a latent image encoded with indices."""
+        # Built model if not built yet
+        if not self.built:
+            self(x)
+        # Encode
+        z_e = self.encoder(x)
+        flat_z_e = tf.reshape(z_e, shape=(-1, z_e.shape[-1]))
+        # Compute the l2 distance between each latent vector and each vector
+        # in the codebook
+        codebook = self.quantizer.codebook  # (embedding_dim, codebook_size)
+        distances = (
+            tf.reduce_sum(flat_z_e**2, axis=1, keepdims=True) -  # (batch_size, 1)
+            2 * tf.matmul(flat_z_e, codebook) +  # (batch_size, codebook_size)
+            tf.reduce_sum(codebook**2, axis=0, keepdims=True)  # (1, codebook_size)
+        )
+        encoding_indices = tf.argmax(-distances, axis=1)  # (batch_size,)
+        encoding_indices = tf.reshape(encoding_indices, tf.concat([tf.shape(z_e)[:-1], [1]], axis=0))
+        return encoding_indices
+
+    def dequantize(self, x):
+        """Decode a latent image of indices back to a full image."""
+        # Decode
+        flat_x = tf.reshape(x, shape=(-1, x.shape[-1]))
+        codebook = tf.transpose(self.quantizer.codebook)  # (codebook_size, embedding_dim)
+        z_q = tf.nn.embedding_lookup(codebook, flat_x)  # (batch_size, embedding_dim)
+        z_q = tf.reshape(z_q, tf.concat([tf.shape(x)[:-1], [-1]], axis=0))
+        x_rec = self.decoder(z_q)
+        return x_rec
+
     def call(self, x, training=False):
         # x shape = (batch_size, height, width, channels)
         # Encode
