@@ -73,3 +73,39 @@ class PlotReconstructionCallback(tfk.callbacks.Callback):
                 step=epoch,
                 max_outputs=self.nex
             )
+
+class PlotSamplesCallback(tfk.callbacks.Callback):
+    """Plot `nex` sampled image to tensorboard."""
+    def __init__(self, logdir: str, nex: int=4):
+        super(PlotSamplesCallback, self).__init__()
+        logdir = os.path.join(logdir, 'samples')
+        self.file_writer = tf.summary.create_file_writer(logdir=logdir)
+        self.nex = nex
+
+    def plot_img(self, image):
+        fig, ax = plt.subplots(nrows=1, ncols=1)
+
+        if image.shape[-1] == 1:
+            image = tf.squeeze(image, axis=-1)
+
+        ax.imshow(image, vmin=0., vmax=1., cmap=plt.cm.Greys)
+        ax.axis('off')
+
+        return fig
+
+    def on_epoch_end(self, epoch, logs=None):
+        images = self.model.sample(self.nex)
+
+        imgs = []
+        for i in range(self.nex):
+            fig = self.plot_img(images[i])
+            imgs.append(plot_to_image(fig))
+
+        imgs = tf.concat(imgs, axis=0)
+        with self.file_writer.as_default():
+            tf.summary.image(
+                name='Samples',
+                data=imgs,
+                step=epoch,
+                max_outputs=self.nex
+            )
