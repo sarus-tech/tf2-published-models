@@ -1,0 +1,17 @@
+[[source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+verify_ssl = true
+
+[dev-packages]
+ipython = "*"
+
+[packages]
+tensorflow = "*"
+matplotlib = "*"
+tensorflow-addons = "*"
+scipy = "*"
+tensorflow-hub = "*"
+
+[requires]
+python_version = "3.8"
